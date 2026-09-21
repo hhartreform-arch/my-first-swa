@@ -310,9 +310,9 @@ function toDeal(row) {
   // 進捗ステータス（いま案件がどこにあるか／進行中の案件数）用：今日時点で完工しているか
   d.isCompleted = !!(d.completeBase && d.contract && !d.lost && d.completeBase <= today());
 
-  // 売上集計用：完成日(予定/実績)があり契約済み・失注していなければ、
-  // 今日より前でも後でも、その年の「実績」として数える（見込みとは分けない）
-  d.isDoneInYear = !!(d.completeBase && d.contract && !d.lost);
+  // 売上集計用：完成日(予定/実績)が対象年に入っていて失注していなければ「実績」として数える。
+  // 契約日(実績)の有無・年は問わない（いつ契約した案件でも、完成日が対象年ならカウントする）
+  d.isDoneInYear = !!(d.completeBase && !d.lost);
 
   // 契約時粗利（= 契約金額 − 実行予算）
   d.plannedProfit = (amount !== null && budget !== null) ? amount - budget : null;
