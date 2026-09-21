@@ -1,17 +1,63 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="styles.css">
-  <title>Vanilla JavaScript App</title>
+    <meta charset="UTF-8">
+    <title>スプシ連携ダッシュボード</title>
+    <!-- グラフを描画するためのライブラリ（Chart.js）を読み込む -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-
 <body>
-  <main>
-    <h1>テキスト公開中</h1>
-  </main>
-</body>
+    <div style="width: 600px; margin: 30px auto;">
+        <!-- ここにグラフが表示されます -->
+        <canvas id="myChart"></canvas>
+    </div>
 
+    <script>
+        // 1. スプレッドシートのCSV出力URL（★自分のシートIDに書き換えてください）
+        const sheetId = '12bLSGCov_nXMiyU-GH1rUdb5ZPEWxe1iNAJsfK71Vd8';
+        const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+
+        async function drawDashboard() {
+            try {
+                // 2. ネットワーク経由でスプレッドシートのデータを取得
+                const response = await fetch(csvUrl);
+                const csvText = await response.text();
+
+                // 3. 取得したCSVデータをプログラムで扱いやすい形（配列）に整理
+                const rows = csvText.split('\n').slice(1); // 1行目（見出し）を飛ばす
+                const chartLabels = [];
+                const chartData = [];
+
+                rows.forEach(row => {
+                    const columns = row.split(',');
+                    if(columns.length >= 2) {
+                        // ダブルクォーテーションを外して配列に追加
+                        chartLabels.push(columns[0].replace(/"/g, '').trim()); // A列（項目）
+                        chartData.push(Number(columns[1].replace(/"/g, '').trim())); // B列（数値）
+                    }
+                });
+
+                // 4. Chart.jsを使ってグラフを描画
+                const ctx = document.getElementById('myChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'bar', // 'pie'（円グラフ）や 'line'（折れ線）に変更可能
+                    data: {
+                        labels: chartLabels,
+                        datasets: [{
+                            label: 'スプレッドシートのデータ',
+                            data: chartData,
+                            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                            borderWidth: 1
+                        }]
+                    }
+                });
+            } catch (error) {
+                console.error('データの取得に失敗しました:', error);
+            }
+        }
+
+        // ページを開いた時に処理を実行
+        drawDashboard();
+    </script>
+</body>
 </html>
