@@ -1,38 +1,36 @@
 /* =========================================================================
    shared.js  … 2つのダッシュボードで共通して使う処理
-   - スプレッドシートの取得とCSVの解釈
-   - 列名の定義（シートの見出しを変えたら、ここだけ直せば両方直る）
-   - 案件のステータス判定と集計
    ========================================================================= */
 
 /* ---------------------------------------------------------------
    1. 設定
    --------------------------------------------------------------- */
 const CONFIG = {
-  // 集計の対象年（null なら今日の年）
-  targetYear: null,
+  // これより前の年のデータは使わない（支店・担当者のプルダウンにも出さない）
+  minYear: 2026,
 
-  // 月次目標（万円）。担当者名をキーにすると個人別に上書きできる。
-  // 1月〜12月の順。PDFの表に入っていた数字を初期値として入れてある。
-  targets: {
-    default: {
-      // 完工売上目標（万円）
-      sales:  [400, 500, 500, 1000, 1000, 1000, 500, 500, 400, 400, 400, 400],
-      // 完工粗利目標（万円）
-      profit: [100, 125, 125, 250, 250, 250, 125, 125, 100, 100, 100, 100]
-    }
-    // 例）個人別に変える場合:
-    // '山田 太郎': { sales: [...12個...], profit: [...12個...] }
+  // 完工の判定に使う日付
+  //   'plan'   … 完成日(予定) を優先（実績が入っていない運用向け）★いまはこちら
+  //   'actual' … 完成日(実績) を優先し、無ければ予定
+  completionBasis: 'plan',
+
+  // 目標を読むシート名
+  targetSheet: '目標',
+
+  // 目標シートの金額の単位  'auto' | 'yen'（円） | 'man'（万円）
+  targetUnit: 'auto',
+
+  // 目標シートが読めなかったときに使う値（万円／1〜12月）
+  fallbackTargets: {
+    sales:  [400, 500, 500, 1000, 1000, 1000, 500, 500, 400, 400, 400, 400],
+    profit: [100, 125, 125, 250, 250, 250, 125, 125, 100, 100, 100, 100]
   },
 
-  // 契約売上の年間目標（万円）※PDFの「目標12,000万」
-  contractTargetYear: 12000,
+  // 契約売上の目標を、目標シートの年間売上に対して何倍で見るか（1 = 同じ）
+  contractTargetRatio: 1,
 
   // 価格帯の並び順（シートの「正規価格帯」の値に合わせて書き換える）
   priceBandOrder: ['～300万', '300～500万', '500～1,000万', '1,000万～'],
-
-  // 見込ランクとして扱う値
-  rankOrder: ['S', 'A', 'B', 'C'],
 
   // 見込みに含めるランク（PDFの「斜線=見込み（S・Aのみ）」）
   forecastRanks: ['S', 'A']
@@ -40,72 +38,73 @@ const CONFIG = {
 
 /* ---------------------------------------------------------------
    2. 列名の定義
-   シートの見出しを1文字でも変えたら、ここを合わせる
+   配列で書いた列は「上から順に探して、最初に見つかったもの」を使う。
+   全角・半角カッコやスペースのゆれは自動で吸収する。
    --------------------------------------------------------------- */
 const COL = {
-  id:            'システムID',
-  name:          '案件名',
-  branch:        '支店名',
-  owner:         '主担当',
-  inquiryDate:   '反響日',
-  lostDate:      '失注日',
-  quoteDate:     '概算見積提出日(実績)',
-  surveyDate:    '現調日(実績)',
-  contractDate:  '契約日(実績)',
-  completePlan:  '完成日(予定)',
-  completeDate:  '完成日(実績)',
-  propertyType:  '物件種別',
-  mediaL:        '媒体大分類',
-  mediaM:        '媒体中分類',
-  mediaS:        '媒体小分類',
-  cntCase:       '案件カウント',
-  cntQuote:      '見積りカウント',
-  cntSurvey:     '現調カウント',
-  cntContract:   '契約カウント',
-  salesDate:     '売上日',
-  amount:        '契約金額（税込）',
-  cost:          '最終原価',
-  profit:        '最終粗利',
-  profitRate:    '最終粗利率',
-  storeType:     '店直種別',
-  budget:        '予算',
-  buildingType:  '建物種別2',
-  contractBand:  '契約価格帯',
-  rank:          '見込',
-  halfComplete:  '半期(完工)',
-  qtrComplete:   '四半期(完工)',
-  completeYear:  '完工年',
-  completeMonth: '完工月',
-  block500:      '500万区画',
-  block:         'ブロック',
-  isKansai:      '関西？',
-  occurYear:     '発生年',
-  occurMonth:    '発生月',
-  priceBand:     '正規価格帯',
-  contractYear:  '契約年',
-  contractMonth: '契約月',
-  halfContract:  '半期(契約)',
-  qtrContract:   '四半期(契約)',
-  cityGroup:     '物件市区群',
-  planDate:      '契約予定日',
-  planYear:      '契約予定年',
-  planMonth:     '契約予定月',
-  halfPlan:      '半期(契約予定)',
-  qtrPlan:       '四半期(契約予定)',
-  isShinjuku:    '新宿・杉並支店？',
+  id:            ['システムID', 'ID'],
+  name:          ['案件名', '顧客名'],
+  branch:        ['支店名', '支店'],
+  owner:         ['主担当', '担当者', '担当'],
+  block:         ['ブロック', 'ブロック名'],
 
-  // --- ここから下は「いまのシートに無い」列 ---
-  // 追加すれば自動で表示に使われる。無ければ「未入力」扱いで動く。
-  startDate:     '着工日(実績)',   // 着工前と工事中を分けるのに使う
-  nextAction:    '次にやること',
-  blockerPrice:  '阻害_価格',
-  blockerPlan:   '阻害_提案',
-  blockerOwner:  '阻害_担当者',
-  blockerComp:   '阻害_会社',
-  blockerTiming: '阻害_時期',
-  blockerDecide: '阻害_決裁者',
-  blockerRival:  '阻害_競合',
-  lossReason:    '毀損要因'
+  inquiryDate:   ['反響日', '発生日'],
+  lostDate:      ['失注日'],
+  quoteDate:     ['概算見積提出日(実績)', '概算見積提出日', '見積提出日(実績)', '見積提出日'],
+  surveyDate:    ['現調日(実績)', '現調日'],
+  contractDate:  ['契約日(実績)', '契約日'],
+  completePlan:  ['完成日(予定)', '完工日(予定)', '完成予定日', '完工予定日'],
+  completeDate:  ['完成日(実績)', '完工日(実績)', '完成日', '完工日'],
+  planDate:      ['契約予定日'],
+  salesDate:     ['売上日'],
+  startDate:     ['着工日(実績)', '着工日'],   // 無くても動く
+
+  propertyType:  ['物件種別'],
+  mediaL:        ['媒体大分類'],
+  mediaM:        ['媒体中分類'],
+  mediaS:        ['媒体小分類'],
+  amount:        ['契約金額（税込）', '契約金額(税込)', '契約金額'],
+  cost:          ['最終原価'],
+  profit:        ['最終粗利'],
+  profitRate:    ['最終粗利率'],
+  budget:        ['予算', '実行予算'],
+  storeType:     ['店直種別'],
+  buildingType:  ['建物種別2'],
+  contractBand:  ['契約価格帯'],
+  priceBand:     ['正規価格帯'],
+  rank:          ['見込'],
+  cityGroup:     ['物件市区群'],
+
+  occurYear:     ['発生年'],
+  occurMonth:    ['発生月'],
+  contractYear:  ['契約年'],
+  contractMonth: ['契約月'],
+  completeYear:  ['完工年'],
+  completeMonth: ['完工月'],
+  planYear:      ['契約予定年'],
+  planMonth:     ['契約予定月'],
+
+  // --- ここから下は「いまのシートに無い」列。足せば自動で使われる ---
+  nextAction:    ['次にやること'],
+  blockerPrice:  ['阻害_価格'],
+  blockerPlan:   ['阻害_提案'],
+  blockerOwner:  ['阻害_担当者'],
+  blockerComp:   ['阻害_会社'],
+  blockerTiming: ['阻害_時期'],
+  blockerDecide: ['阻害_決裁者'],
+  blockerRival:  ['阻害_競合'],
+  lossReason:    ['毀損要因']
+};
+
+/* 目標シートの列 */
+const TCOL = {
+  block:  ['ブロック名', 'ブロック'],
+  branch: ['支店名', '支店'],
+  owner:  ['担当者', '主担当'],
+  year:   ['年度', '年'],
+  month:  ['月'],
+  sales:  ['売上'],
+  profit: ['粗利']
 };
 
 /* 阻害要因チップの定義（PDFの赤枠部分） */
@@ -121,79 +120,95 @@ const BLOCKERS = [
 
 /* ---------------------------------------------------------------
    3. CSVの解釈
-   引用符の中のカンマ・改行を壊さずに読む（split(',')では壊れる）
    --------------------------------------------------------------- */
 function parseCSV(text) {
-  // BOMを除去
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-
   const rows = [];
-  let row = [];
-  let field = '';
-  let inQuotes = false;
+  let row = [], field = '', inQuotes = false;
 
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-
     if (inQuotes) {
       if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i++; }   // "" はエスケープされた "
-        else { inQuotes = false; }
-      } else {
-        field += c;
-      }
+        if (text[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else { field += c; }
       continue;
     }
-
     if (c === '"') { inQuotes = true; }
     else if (c === ',') { row.push(field); field = ''; }
-    else if (c === '\r') { /* 無視（\nで改行を判定する） */ }
+    else if (c === '\r') { /* skip */ }
     else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
     else { field += c; }
   }
   if (field !== '' || row.length) { row.push(field); rows.push(row); }
-
   return rows;
 }
 
-/** CSV文字列 → オブジェクトの配列（1行目をヘッダーとして使う） */
-function csvToObjects(text) {
-  const rows = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
-  if (!rows.length) return [];
-
-  const headers = rows[0].map(h => String(h).replace(/\s+/g, '').trim());
-
-  return rows.slice(1).map(cols => {
-    const o = {};
-    headers.forEach((h, i) => { o[h] = cols[i] !== undefined ? String(cols[i]).trim() : ''; });
-    return o;
-  });
+/** 列名の表記ゆれを吸収するためのキー化（全角→半角、スペース除去） */
+function normKey(s) {
+  return String(s == null ? '' : s).normalize('NFKC').replace(/\s/g, '').trim();
 }
 
-/** ヘッダーの空白ゆれを吸収して値を取り出す */
-function cell(row, colName) {
-  if (!colName) return '';
-  const key = colName.replace(/\s+/g, '');
-  return row[key] !== undefined ? row[key] : '';
+/** CSV → { headers, rows(オブジェクト配列) } */
+function csvToTable(text) {
+  const raw = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
+  if (!raw.length) return { headers: [], rows: [] };
+
+  const headers = raw[0].map(h => String(h).trim());
+  const keys = headers.map(normKey);
+
+  const rows = raw.slice(1).map(cols => {
+    const o = {};
+    keys.forEach((k, i) => { o[k] = cols[i] !== undefined ? String(cols[i]).trim() : ''; });
+    return o;
+  });
+  return { headers, rows };
+}
+
+/** 定義した列名（文字列 or 配列）から、実際に存在するキーを探す */
+function resolveKey(rowKeys, colDef) {
+  const list = Array.isArray(colDef) ? colDef : [colDef];
+  for (const name of list) {
+    const k = normKey(name);
+    if (rowKeys.has(k)) return k;
+  }
+  return null;
+}
+
+/** 1行から値を取り出す（表記ゆれ対応） */
+function cell(row, colDef) {
+  const list = Array.isArray(colDef) ? colDef : [colDef];
+  for (const name of list) {
+    const k = normKey(name);
+    if (row[k] !== undefined && row[k] !== '') return row[k];
+  }
+  for (const name of list) {
+    const k = normKey(name);
+    if (row[k] !== undefined) return row[k];
+  }
+  return '';
 }
 
 /* ---------------------------------------------------------------
    4. 値の変換
    --------------------------------------------------------------- */
-
-/** "¥1,234,567" "1234567" "26.8%" → 数値。空なら null */
 function num(v) {
   if (v === null || v === undefined) return null;
-  const s = String(v).replace(/[¥,、\s円]/g, '').replace(/[％%]/g, '');
-  if (s === '' || s === '-' || s === '－' || s === '#DIV/0!' || s === '#N/A') return null;
+  const s = String(v).normalize('NFKC').replace(/[¥,、\s円]/g, '').replace(/[%]/g, '');
+  if (s === '' || s === '-' || s === '－' || s.startsWith('#')) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+function num0(v) { const n = num(v); return n === null ? 0 : n; }
+
+/** 「2026年度」「9月」なども数値にする */
+function numLoose(v) {
+  const s = String(v == null ? '' : v).normalize('NFKC').replace(/[^\d.\-]/g, '');
+  if (s === '') return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
 
-/** 数値、空なら0 */
-function num0(v) { const n = num(v); return n === null ? 0 : n; }
-
-/** 率。"26.8%" → 0.268 / "0.268" → 0.268 */
 function rate(v) {
   const s = String(v == null ? '' : v);
   const n = num(s);
@@ -201,19 +216,19 @@ function rate(v) {
   return /[％%]/.test(s) ? n / 100 : (Math.abs(n) > 1 ? n / 100 : n);
 }
 
-/** 日付文字列 → Date。空・不正なら null */
 function parseDate(v) {
   if (!v) return null;
-  const s = String(v).trim();
+  const s = String(v).normalize('NFKC').trim();
   if (!s || s === '-' || s === '－') return null;
 
-  // gvizが返す Date(2026,0,5) 形式
-  const m = s.match(/^Date\((\d+),(\d+),(\d+)/);
+  const m = s.match(/^Date\((\d+),(\d+),(\d+)/);           // gvizの Date(2026,0,5)
   if (m) return new Date(+m[1], +m[2], +m[3]);
 
-  // 2026/1/5  2026-01-05  2026.1.5
   const m2 = s.match(/^(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
   if (m2) return new Date(+m2[1], +m2[2] - 1, +m2[3]);
+
+  const m3 = s.match(/^(\d{4})[\/\-.年](\d{1,2})[月]?$/);   // 年月だけ → 1日扱い
+  if (m3) return new Date(+m3[1], +m3[2] - 1, 1);
 
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d;
@@ -223,14 +238,12 @@ const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const sameMonth = (d, base) => !!d && d.getFullYear() === base.getFullYear() && d.getMonth() === base.getMonth();
 const sameYear  = (d, y)    => !!d && d.getFullYear() === y;
 
-/* 表示用フォーマット */
 const fmtMan   = v => (v === null || v === undefined || !Number.isFinite(v)) ? '―' : Math.round(v / 10000).toLocaleString('ja-JP');
 const fmtMan1  = v => (v === null || !Number.isFinite(v)) ? '―' : (v / 10000).toFixed(1);
-const fmtMil   = v => (v === null || !Number.isFinite(v)) ? '―' : (v / 1000000).toFixed(1);   // 百万円
+const fmtMil   = v => (v === null || !Number.isFinite(v)) ? '―' : (v / 1000000).toFixed(1);
 const fmtYen   = v => (v === null || !Number.isFinite(v)) ? '―' : Math.round(v).toLocaleString('ja-JP');
 const fmtPct   = (v, d = 1) => (v === null || !Number.isFinite(v)) ? '―' : (v * 100).toFixed(d) + '%';
 const fmtPt    = v => (v === null || !Number.isFinite(v)) ? '―' : (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + 'pt';
-const fmtNum   = v => (v === null || !Number.isFinite(v)) ? '―' : Math.round(v).toLocaleString('ja-JP');
 const fmtMD    = d => d ? `${d.getMonth() + 1}/${d.getDate()}` : '―';
 const fmtM     = d => d ? `${d.getMonth() + 1}月` : '未定';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -246,17 +259,18 @@ function toDeal(row) {
 
   const d = {
     raw: row,
-    id:       cell(row, COL.id),
-    name:     cell(row, COL.name),
-    branch:   cell(row, COL.branch),
-    owner:    cell(row, COL.owner),
+    id:     cell(row, COL.id),
+    name:   cell(row, COL.name),
+    branch: cell(row, COL.branch),
+    owner:  cell(row, COL.owner),
+    block:  cell(row, COL.block),
 
     inquiry:      parseDate(cell(row, COL.inquiryDate)),
     lost:         parseDate(cell(row, COL.lostDate)),
     quote:        parseDate(cell(row, COL.quoteDate)),
     survey:       parseDate(cell(row, COL.surveyDate)),
     contract:     parseDate(cell(row, COL.contractDate)),
-    start:        parseDate(cell(row, COL.startDate)),      // 無い場合は null
+    start:        parseDate(cell(row, COL.startDate)),
     completePlan: parseDate(cell(row, COL.completePlan)),
     complete:     parseDate(cell(row, COL.completeDate)),
     plan:         parseDate(cell(row, COL.planDate)),
@@ -274,40 +288,36 @@ function toDeal(row) {
     propertyType: cell(row, COL.propertyType),
     buildingType: cell(row, COL.buildingType),
     storeType:    cell(row, COL.storeType),
-    block:        cell(row, COL.block),
     cityGroup:    cell(row, COL.cityGroup),
     rank:         normalizeRank(cell(row, COL.rank)),
     nextAction:   cell(row, COL.nextAction),
     lossReason:   cell(row, COL.lossReason),
 
-    occurYear:    num(cell(row, COL.occurYear)),
-    occurMonth:   num(cell(row, COL.occurMonth)),
-    contractYear: num(cell(row, COL.contractYear)),
-    completeYear: num(cell(row, COL.completeYear)),
-    completeMonth:num(cell(row, COL.completeMonth)),
-    planYear:     num(cell(row, COL.planYear)),
-    planMonth:    num(cell(row, COL.planMonth)),
-
-    cntCase:     num0(cell(row, COL.cntCase)),
-    cntSurvey:   num0(cell(row, COL.cntSurvey)),
-    cntQuote:    num0(cell(row, COL.cntQuote)),
-    cntContract: num0(cell(row, COL.cntContract))
+    occurYear:    numLoose(cell(row, COL.occurYear)),
+    occurMonth:   numLoose(cell(row, COL.occurMonth)),
+    contractYear: numLoose(cell(row, COL.contractYear)),
+    completeYear: numLoose(cell(row, COL.completeYear)),
+    planMonth:    numLoose(cell(row, COL.planMonth))
   };
 
-  // 契約時粗利（= 契約金額 − 実行予算）。予算が入っていないと出せない
+  /* ★ 完工の基準日
+     CONFIG.completionBasis = 'plan' のとき、完成日(予定) を優先して使う。
+     予定日が今日以前なら「実績」、今日より先なら「見込み」として扱う。 */
+  d.completeBase = CONFIG.completionBasis === 'plan'
+    ? (d.completePlan || d.complete)
+    : (d.complete || d.completePlan);
+  d.isCompleted  = !!(d.completeBase && d.contract && !d.lost && d.completeBase <= today());
+  d.isPlanned    = !!(d.completeBase && d.contract && !d.lost && d.completeBase >  today());
+
+  // 契約時粗利（= 契約金額 − 実行予算）
   d.plannedProfit = (amount !== null && budget !== null) ? amount - budget : null;
   d.plannedRate   = (d.plannedProfit !== null && amount) ? d.plannedProfit / amount : null;
   d.finalRate     = d.profitRate !== null ? d.profitRate
                   : (profit !== null && amount ? profit / amount : null);
-  // 毀損（完工粗利率 − 契約時粗利率）
-  d.loss = (d.finalRate !== null && d.plannedRate !== null) ? d.finalRate - d.plannedRate : null;
+  d.loss    = (d.finalRate !== null && d.plannedRate !== null) ? d.finalRate - d.plannedRate : null;
   d.lossYen = (d.profit !== null && d.plannedProfit !== null) ? d.profit - d.plannedProfit : null;
 
-  // 阻害要因（列が無ければ空配列）
-  d.blockers = BLOCKERS.map(b => {
-    const v = cell(row, COL[b.key]);
-    return { ...b, remaining: isTruthy(v) };
-  });
+  d.blockers = BLOCKERS.map(b => ({ ...b, remaining: isTruthy(cell(row, COL[b.key])) }));
   d.blockerKnown = BLOCKERS.some(b => cell(row, COL[b.key]) !== '');
   d.blockerLeft  = d.blockers.filter(b => b.remaining).length;
 
@@ -319,24 +329,26 @@ function isTruthy(v) {
   const s = String(v == null ? '' : v).trim().toUpperCase();
   return ['1', 'TRUE', '○', '◯', '●', '残', '未', 'YES', 'Y'].includes(s);
 }
-
 function normalizeRank(v) {
-  const s = String(v == null ? '' : v).trim().toUpperCase();
-  const m = s.match(/[SABC]/);
+  const m = String(v == null ? '' : v).trim().toUpperCase().match(/[SABC]/);
   return m ? m[0] : '';
+}
+
+/* この案件が「どの年のものか」。minYear の足切りに使う */
+function dealYear(d) {
+  const years = [d.completeBase, d.contract, d.inquiry, d.plan]
+    .filter(Boolean).map(x => x.getFullYear());
+  if (d.occurYear) years.push(d.occurYear);
+  return years.length ? Math.max(...years) : null;
 }
 
 /* ---------------------------------------------------------------
    6. ステータス判定
-   失注 → 完工 → 工事中 → 着工前 → 見積提出済 → 現調済 → 現調前
-   ※「着工日」列が無い場合、契約済み・未完工はすべて「着工前/工事中」に
-     まとめて表示する（STATUS_LABEL の注記を参照）
    --------------------------------------------------------------- */
 const STATUS = {
   LOST: 'lost', PRE_SURVEY: 'preSurvey', SURVEYED: 'surveyed', QUOTED: 'quoted',
   BEFORE_START: 'beforeStart', IN_WORK: 'inWork', DONE: 'done'
 };
-
 const STATUS_LABEL = {
   preSurvey:   'これから現調',
   surveyed:    '現調済み<br>見積提出前',
@@ -349,90 +361,177 @@ const STATUS_LABEL = {
 
 function statusOf(d) {
   if (d.lost) return STATUS.LOST;
-  if (d.complete) return STATUS.DONE;
+  if (d.isCompleted) return STATUS.DONE;
   if (d.contract) {
     if (d.start) return d.start <= today() ? STATUS.IN_WORK : STATUS.BEFORE_START;
-    // 着工日が無いときは、完成予定日が近い（当月内）ものを工事中とみなす
-    if (d.completePlan && d.completePlan <= addMonths(today(), 1)) return STATUS.IN_WORK;
+    if (d.completeBase && d.completeBase <= addMonths(today(), 1)) return STATUS.IN_WORK;
     return STATUS.BEFORE_START;
   }
   if (d.quote)  return STATUS.QUOTED;
   if (d.survey) return STATUS.SURVEYED;
   return STATUS.PRE_SURVEY;
 }
-
 function addMonths(d, n) { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; }
 
 /* ---------------------------------------------------------------
    7. データ取得
    --------------------------------------------------------------- */
-async function loadDeals(sheet = '発生案件') {
+const DIAG = { deal: null, target: null };   // 診断用に生データを控える
+
+async function fetchSheet(sheet) {
   const res = await fetch('/api/GetSheetData?sheet=' + encodeURIComponent(sheet));
-  if (!res.ok) throw new Error(await res.text() || ('HTTP ' + res.status));
-  const text = await res.text();
-  return csvToObjects(text).map(toDeal).filter(d => d.id || d.name);
+  if (!res.ok) throw new Error((await res.text()) || ('HTTP ' + res.status));
+  return csvToTable(await res.text());
+}
+
+async function loadDeals(sheet = '発生案件') {
+  const table = await fetchSheet(sheet);
+  const all = table.rows.map(toDeal).filter(d => d.id || d.name);
+  const kept = all.filter(d => { const y = dealYear(d); return y === null ? false : y >= CONFIG.minYear; });
+
+  DIAG.deal = { sheet, headers: table.headers, rows: table.rows, all, kept };
+  return kept;
+}
+
+/** 目標シート（ブロック名・支店名・担当者・年度・月・売上・粗利） */
+async function loadTargets() {
+  try {
+    const table = await fetchSheet(CONFIG.targetSheet);
+    const keys = new Set(Object.keys(table.rows[0] || {}));
+    const rows = table.rows.map(r => ({
+      block:  cell(r, TCOL.block),
+      branch: cell(r, TCOL.branch),
+      owner:  cell(r, TCOL.owner),
+      year:   numLoose(cell(r, TCOL.year)),
+      month:  numLoose(cell(r, TCOL.month)),
+      sales:  num(cell(r, TCOL.sales)),
+      profit: num(cell(r, TCOL.profit))
+    })).filter(r => r.year && r.month);
+
+    // 単位の判定（万円で入っているか、円で入っているか）
+    let unit = CONFIG.targetUnit;
+    if (unit === 'auto') {
+      const max = Math.max(0, ...rows.map(r => Math.abs(r.sales || 0)));
+      unit = max >= 100000 ? 'yen' : 'man';
+    }
+    const k = unit === 'yen' ? 1 : 10000;
+    rows.forEach(r => { r.sales = (r.sales || 0) * k; r.profit = (r.profit || 0) * k; });
+
+    DIAG.target = { ok: true, headers: table.headers, count: rows.length, unit, missing: [
+      ...Object.entries(TCOL).filter(([, def]) => !resolveKey(keys, def)).map(([k2]) => k2)
+    ] };
+    return rows;
+  } catch (e) {
+    DIAG.target = { ok: false, error: e.message || String(e) };
+    return null;
+  }
+}
+
+/** 選択中の条件に合う目標を、月別（円）で返す */
+function targetsFrom(targetRows, params, year) {
+  if (!targetRows || !targetRows.length) {
+    return {
+      source: 'fallback',
+      sales:  CONFIG.fallbackTargets.sales.map(v => v * 10000),
+      profit: CONFIG.fallbackTargets.profit.map(v => v * 10000)
+    };
+  }
+  let rows = targetRows.filter(r => r.year === year);
+  if (params.block)  rows = rows.filter(r => r.block  === params.block);
+  if (params.branch) rows = rows.filter(r => r.branch === params.branch);
+  if (params.owner)  rows = rows.filter(r => r.owner  === params.owner);
+
+  // 担当者行と支店合計行が混在していても二重計上しないよう、細かいほうを優先
+  if (!params.owner) {
+    const withOwner = rows.filter(r => r.owner !== '');
+    rows = withOwner.length ? withOwner : rows.filter(r => r.owner === '');
+  }
+
+  const sales = Array(12).fill(0), profit = Array(12).fill(0);
+  rows.forEach(r => {
+    const m = Math.min(12, Math.max(1, r.month)) - 1;
+    sales[m]  += r.sales  || 0;
+    profit[m] += r.profit || 0;
+  });
+  return { source: rows.length ? 'sheet' : 'empty', rows: rows.length, sales, profit };
 }
 
 /* ---------------------------------------------------------------
-   8. 絞り込み（URLの ?branch= &owner= を使う）
+   8. 絞り込み（URLの ?block= &branch= &owner= &year=）
    --------------------------------------------------------------- */
 function getParams() {
   const p = new URLSearchParams(location.search);
+  const y = Number(p.get('year'));
   return {
+    block:  p.get('block')  || '',
     branch: p.get('branch') || '',
     owner:  p.get('owner')  || '',
-    year:   Number(p.get('year')) || CONFIG.targetYear || new Date().getFullYear()
+    year:   y && y >= CONFIG.minYear ? y : Math.max(CONFIG.minYear, new Date().getFullYear()),
+    debug:  p.get('debug') === '1'
   };
 }
 
-function applyFilter(deals, { branch, owner }) {
+function applyFilter(deals, { block, branch, owner }) {
   return deals.filter(d =>
+    (!block  || d.block  === block) &&
     (!branch || d.branch === branch) &&
     (!owner  || d.owner  === owner));
 }
 
 function uniqueSorted(arr) {
-  return [...new Set(arr.filter(v => v !== '' && v != null))].sort((a, b) => a.localeCompare(b, 'ja'));
+  return [...new Set(arr.filter(v => v !== '' && v != null))].sort((a, b) => String(a).localeCompare(String(b), 'ja'));
 }
 
-/** ヘッダーの支店・担当者セレクトを組み立てる */
-function buildSelectors(allDeals, params, onChange) {
-  const branchSel = document.getElementById('branchSelect');
-  const ownerSel  = document.getElementById('ownerSelect');
-  const yearSel   = document.getElementById('yearSelect');
-  if (!branchSel || !ownerSel) return;
+/** ブロック→支店→担当者の順に、選ばれた範囲のものだけ出す */
+function buildSelectors(deals, params, onChange) {
+  const el = id => document.getElementById(id);
+  const opt = (v, cur, label) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label || v)}</option>`;
 
-  const branches = uniqueSorted(allDeals.map(d => d.branch));
-  branchSel.innerHTML = '<option value="">全支店</option>'
-    + branches.map(b => `<option value="${esc(b)}"${b === params.branch ? ' selected' : ''}>${esc(b)}</option>`).join('');
+  const blockSel = el('blockSelect'), branchSel = el('branchSelect'),
+        ownerSel = el('ownerSelect'), yearSel = el('yearSelect');
 
-  const owners = uniqueSorted(allDeals.filter(d => !params.branch || d.branch === params.branch).map(d => d.owner));
-  ownerSel.innerHTML = '<option value="">全担当</option>'
-    + owners.map(o => `<option value="${esc(o)}"${o === params.owner ? ' selected' : ''}>${esc(o)}</option>`).join('');
-
+  if (blockSel) {
+    blockSel.innerHTML = opt('', params.block, '全ブロック')
+      + uniqueSorted(deals.map(d => d.block)).map(b => opt(b, params.block)).join('');
+    blockSel.onchange = onChange;
+  }
+  if (branchSel) {
+    const src = deals.filter(d => !params.block || d.block === params.block);
+    branchSel.innerHTML = opt('', params.branch, '全支店')
+      + uniqueSorted(src.map(d => d.branch)).map(b => opt(b, params.branch)).join('');
+    branchSel.onchange = onChange;
+  }
+  if (ownerSel) {
+    const src = deals.filter(d =>
+      (!params.block || d.block === params.block) &&
+      (!params.branch || d.branch === params.branch));
+    ownerSel.innerHTML = opt('', params.owner, '全担当')
+      + uniqueSorted(src.map(d => d.owner)).map(o => opt(o, params.owner)).join('');
+    ownerSel.onchange = onChange;
+  }
   if (yearSel) {
-    const years = uniqueSorted(allDeals
-      .map(d => d.contract || d.inquiry || d.complete)
-      .filter(Boolean).map(dt => String(dt.getFullYear()))).reverse();
-    const list = years.length ? years : [String(new Date().getFullYear())];
-    yearSel.innerHTML = list.map(y => `<option value="${y}"${+y === params.year ? ' selected' : ''}>${y}年</option>`).join('');
+    const years = uniqueSorted(deals.map(dealYear).filter(y => y && y >= CONFIG.minYear))
+      .map(Number).sort((a, b) => b - a);
+    const list = years.length ? years : [params.year];
+    yearSel.innerHTML = list.map(y => opt(String(y), String(params.year), y + '年')).join('');
     yearSel.onchange = onChange;
   }
-  branchSel.onchange = onChange;
-  ownerSel.onchange  = onChange;
 }
 
-/** セレクトの内容をURLに反映して読み込み直す */
 function navigateBySelectors() {
+  const cur = getParams();
+  const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
   const p = new URLSearchParams();
-  const b = document.getElementById('branchSelect');
-  const o = document.getElementById('ownerSelect');
-  const y = document.getElementById('yearSelect');
-  // 支店を変えたら担当者は一旦クリア
-  const changedBranch = b && b.value !== getParams().branch;
-  if (b && b.value) p.set('branch', b.value);
-  if (o && o.value && !changedBranch) p.set('owner', o.value);
-  if (y && y.value) p.set('year', y.value);
+
+  const block = val('blockSelect'), branch = val('branchSelect'), owner = val('ownerSelect');
+  const blockChanged  = block !== cur.block;
+  const branchChanged = branch !== cur.branch;
+
+  if (block) p.set('block', block);
+  if (branch && !blockChanged) p.set('branch', branch);
+  if (owner && !blockChanged && !branchChanged) p.set('owner', owner);
+  if (val('yearSelect')) p.set('year', val('yearSelect'));
+  if (cur.debug) p.set('debug', '1');
   location.search = p.toString();
 }
 
@@ -440,22 +539,8 @@ function navigateBySelectors() {
    9. 集計のヘルパー
    --------------------------------------------------------------- */
 const sum = (arr, f) => arr.reduce((a, d) => a + (f(d) || 0), 0);
+const monthlyBuckets = () => Array.from({ length: 12 }, () => ({ amount: 0, profit: 0, count: 0 }));
 
-/** 目標（万円）を取り出す */
-function targetsFor(owner) {
-  const t = (owner && CONFIG.targets[owner]) || CONFIG.targets.default;
-  return {
-    sales:  (t.sales  || []).map(v => v * 10000),
-    profit: (t.profit || []).map(v => v * 10000)
-  };
-}
-
-/** 月別に集計する土台を作る */
-function monthlyBuckets() {
-  return Array.from({ length: 12 }, () => ({ amount: 0, profit: 0, count: 0 }));
-}
-
-/** グルーピング */
 function groupBy(arr, keyFn, fallback = '未入力') {
   const map = new Map();
   arr.forEach(d => {
@@ -466,15 +551,94 @@ function groupBy(arr, keyFn, fallback = '未入力') {
   return map;
 }
 
-/** 読み込み失敗時の表示 */
+/* ---------------------------------------------------------------
+   10. データ診断（列がちゃんと読めているかの確認）
+   --------------------------------------------------------------- */
+function diagnosticsHTML() {
+  const d = DIAG.deal;
+  if (!d) return '<p>まだデータを読み込んでいません。</p>';
+
+  const keys = new Set(Object.keys(d.rows[0] || {}));
+  const checkCols = [
+    ['反響日', COL.inquiryDate], ['現調日', COL.surveyDate], ['見積提出日', COL.quoteDate],
+    ['契約日', COL.contractDate], ['完成日(予定)', COL.completePlan], ['完成日(実績)', COL.completeDate],
+    ['契約予定日', COL.planDate], ['契約金額', COL.amount], ['予算', COL.budget],
+    ['最終粗利', COL.profit], ['ブロック', COL.block], ['支店名', COL.branch], ['主担当', COL.owner]
+  ];
+
+  const rows = checkCols.map(([label, def]) => {
+    const key = resolveKey(keys, def);
+    if (!key) return `<tr><td class="l">${label}</td><td class="c neg">見つからない</td>
+      <td class="c">―</td><td class="c">―</td><td class="l">―</td></tr>`;
+
+    const vals = d.rows.map(r => r[key]).filter(v => v !== '');
+    const isDate = /日$/.test(label) || /日\)/.test(label);
+    let okCount, samples = [];
+    if (isDate) {
+      okCount = vals.filter(v => parseDate(v) !== null).length;
+      samples = vals.filter(v => parseDate(v) === null).slice(0, 3);
+    } else {
+      okCount = vals.filter(v => num(v) !== null || !/金額|予算|粗利/.test(label)).length;
+      samples = vals.filter(v => /金額|予算|粗利/.test(label) && num(v) === null).slice(0, 3);
+    }
+    const bad = vals.length - okCount;
+    return `<tr>
+      <td class="l">${label}</td>
+      <td class="c">${esc(key)}</td>
+      <td class="num">${vals.length.toLocaleString('ja-JP')}</td>
+      <td class="num ${bad ? 'neg' : ''}">${okCount.toLocaleString('ja-JP')}</td>
+      <td class="l" style="font-size:11px">${samples.length ? esc(samples.join(' / ')) : '―'}</td>
+    </tr>`;
+  }).join('');
+
+  const t = DIAG.target;
+  const targetInfo = !t ? '未読込'
+    : t.ok ? `読み込みOK：${t.count}行／単位は${t.unit === 'yen' ? '円' : '万円'}として解釈`
+           + (t.missing && t.missing.length ? `／<span class="neg">見つからない列：${esc(t.missing.join('、'))}</span>` : '')
+    : `<span class="neg">読み込み失敗：${esc(t.error)}</span>`;
+
+  return `
+    <p style="font-size:12px;margin:0 0 8px">
+      シート「${esc(d.sheet)}」から <b>${d.rows.length.toLocaleString('ja-JP')}行</b> 取得。
+      うち案件として認識 <b>${d.all.length.toLocaleString('ja-JP')}件</b>、
+      ${CONFIG.minYear}年以降に絞って <b>${d.kept.length.toLocaleString('ja-JP')}件</b>。<br>
+      完工の判定に使っている日付：<b>${CONFIG.completionBasis === 'plan' ? '完成日(予定)' : '完成日(実績)'}</b>
+      （予定日が今日以前なら実績、今日より先なら見込み）。<br>
+      目標シート「${esc(CONFIG.targetSheet)}」：${targetInfo}
+    </p>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th class="l">使っている項目</th><th>実際のヘッダー</th><th>入力あり</th><th>読めた数</th><th class="l">読めなかった例</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p style="font-size:11px;color:var(--muted);margin:8px 0 0">
+      シートのヘッダー（${d.headers.length}列）：${esc(d.headers.join('｜'))}</p>`;
+}
+
+function mountDiagnostics(params) {
+  const box = document.getElementById('diagBox');
+  const link = document.getElementById('diagLink');
+  if (!box || !link) return;
+  box.innerHTML = diagnosticsHTML();
+  box.style.display = params.debug ? 'block' : 'none';
+  link.onclick = (e) => {
+    e.preventDefault();
+    box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  };
+}
+
+/* ---------------------------------------------------------------
+   11. 画面共通
+   --------------------------------------------------------------- */
 function showError(message) {
   const el = document.getElementById('errorBox');
   if (!el) { alert(message); return; }
   el.style.display = 'block';
   el.textContent = 'データを読み込めませんでした： ' + message;
 }
-
 function setLoading(on) {
   const el = document.getElementById('loading');
   if (el) el.style.display = on ? 'flex' : 'none';
+}
+function filterLabel(p) {
+  return [p.block || '全ブロック', p.branch || '全支店', p.owner ? '担当者：' + p.owner : '全担当'].join('　');
 }

@@ -1,7 +1,73 @@
-# Vanilla JavaScript App
+# 担当者別ダッシュボード
 
-[Azure Static Web Apps](https://docs.microsoft.com/azure/static-web-apps/overview) allows you to easily build JavaScript apps in minutes. Use this repo with the [quickstart](https://docs.microsoft.com/azure/static-web-apps/getting-started?tabs=vanilla-javascript) to build and customize a new static site.
+## ファイルの置き場所
 
-This repo is used as a starter for a _very basic_ HTML web application using no front-end frameworks.
+既存のリポジトリに上書きしてください。GitHub Actions の yml は**変更不要**です。
 
-This repo has a dev container. This means if you open it inside a [GitHub Codespace](https://github.com/features/codespaces), or using [VS Code with the remote containers extension](https://code.visualstudio.com/docs/remote/containers), it will be opened inside a container with all the dependencies already installed.
+```
+/src/index.html              … 入口（ブロック→支店→担当者）
+/src/weekly.html             … 日次・週次確認 メンバー用
+/src/monthly.html            … 月次確認 メンバー用
+/src/shared.js               … 共通処理（★設定はここ）
+/src/style.css
+/api/GetSheetData/index.js   … 発生案件シート・目標シートを取りに行く
+/api/GetSheetData/function.json
+/staticwebapp.config.json
+```
+
+URL は `?block=東京ブロック&branch=新宿支店&owner=山田 太郎&year=2026` で切り替わります。
+画面上のプルダウンでも切り替わり、ブロック→支店→担当者の順に候補が絞られます。
+
+## 今回の変更
+
+### 1. 完工を「完成日(予定)」で判定するようにした
+
+`shared.js` の `CONFIG.completionBasis = 'plan'`。
+
+- 完成日(予定)が**今日以前** → 完工の**実績**
+- 完成日(予定)が**今日より先** → 完工の**見込み**
+- どちらも契約日が入っている案件だけが対象
+
+完成日(実績)を使う運用に戻すときは `'actual'` に変えてください。
+
+### 2. 完工売上が0だった件
+
+「データ診断」（画面右上のリンク、または URL に `?debug=1`）に、**シートの実際のヘッダー名／入力のある件数／日付として読めた件数／読めなかった値の例**を出すようにしました。
+完成日(実績)が空だったのか、列名が違うのか、日付の書式が読めないのかが、この表で切り分けられます。
+あわせて、列名は全角・半角カッコやスペースの違いを自動で吸収し、`完工日(実績)` `完成日` などの別名でも拾います。
+
+### 3. 2025年以前を除外
+
+`CONFIG.minYear = 2026`。この年より前の案件は読み込んだ時点で捨てるので、**支店・担当者・年のプルダウンにも出てきません**。
+前年対比の行も、前年が `minYear` より前なら非表示になります。
+
+### 4. 目標を「目標」シートから読むようにした
+
+列は `ブロック名／支店名／担当者／年度／月／売上／粗利` を使用（`半期` `四半期` `関西？` `新宿・杉並支店` は読み飛ばし）。
+
+- 選択中のブロック・支店・担当者・年度に合う行を、月別に合計します。
+- 担当者行と支店合計行が混在していても二重計上しないよう、**細かいほうの行を優先**します（担当者の行があればそれだけを使う）。
+- 金額の単位は自動判定（10万以上の値が入っていれば「円」、それ未満なら「万円」）。固定するなら `CONFIG.targetUnit` を `'yen'` か `'man'` に。
+- 目標シートが読めない／条件に合う行が無い場合は、表の下に理由を出します。
+
+契約売上の目標は、いまは目標シートの年間売上をそのまま使っています。別の水準にするなら `CONFIG.contractTargetRatio` を調整してください。
+
+**注意**：目標シートの「支店名・担当者」の表記が発生案件シートと1文字でも違うと、合致する行が0になります。
+
+## まだシートに無くて作れないもの
+
+| 足りないもの | 必要な列 | 無いとどうなるか |
+|---|---|---|
+| 阻害要因（赤枠） | `阻害_価格` `阻害_提案` `阻害_担当者` `阻害_会社` `阻害_時期` `阻害_決裁者` `阻害_競合` | マスは出るが全部グレー |
+| 次にやること | `次にやること` | 「―」表示 |
+| 着工前と工事中の区別 | `着工日(実績)` | 完成予定が1か月以内のものを工事中とみなす暫定ルール |
+| 毀損の要因分類 | `毀損要因` | 「毀損の大きい案件 上位6件」を表示 |
+| アンケート | 別シート `アンケート`（システムIDで紐付け） | 案内文のみ |
+
+## 計算の定義
+
+- **契約売上**＝契約日(実績)がその年　／　**完工売上**＝完成日(予定)がその年
+- **契約時粗利**＝契約金額（税込）−予算　／　**完工粗利**＝最終粗利（無ければ契約時粗利）
+- **毀損**＝完工粗利率 − 契約時粗利率（pt）。予算が空欄の案件は集計に入りません
+- **発生コホート**＝反響日（または発生年）がその年。粗利＝発生数 × 成約率 × 平均単価 × 粗利率
+- **見込ランク**＝「見込」列の S/A/B を優先。空欄なら阻害要因の残数（0→S、1〜2→A、3以上→B）
