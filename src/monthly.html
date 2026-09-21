@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -7,12 +6,9 @@
 <title>担当者別ダッシュボード｜月次</title>
 <link rel="stylesheet" href="style.css">
 <style>
-  /* 月次だけで使う KPIツリー */
   .tree { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
-  .tree .node {
-    flex: 1 1 150px; background: #fff; border: 1px solid var(--line);
-    border-radius: 5px; padding: 10px 12px; min-width: 140px;
-  }
+  .tree .node { flex: 1 1 150px; background: #fff; border: 1px solid var(--line);
+    border-radius: 5px; padding: 10px 12px; min-width: 140px; }
   .tree .node .k { font-size: 11px; color: var(--navy); font-weight: 700; }
   .tree .node .v { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
   .tree .node .v small { font-size: 11px; font-weight: 700; }
@@ -20,20 +16,18 @@
   .tree .op { display: flex; align-items: center; font-size: 17px; color: var(--muted); }
   .tree .node.result { background: #eef4f8; border-color: #c6d8e4; }
   .toggle { display: flex; gap: 6px; margin: 0 0 8px auto; }
-  .toggle button {
-    font: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer;
-    border: 1px solid var(--line); background: #fff; border-radius: 4px; color: var(--navy);
-  }
+  .toggle button { font: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; border-radius: 4px; color: var(--navy); }
   .toggle button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
-  .survey-big { font-size: 40px; font-weight: 700; line-height: 1; }
 </style>
 </head>
 <body>
 
 <div class="topbar">
   <div class="topbar-inner">
-    <span class="title-chip" id="chipTitle">支店／担当者</span>
+    <span class="title-chip" id="chipTitle">読み込み中</span>
     <div class="selects">
+      <select id="blockSelect"></select>
       <select id="branchSelect"></select>
       <select id="ownerSelect"></select>
       <select id="yearSelect"></select>
@@ -41,6 +35,7 @@
     <div class="navlinks">
       <a href="weekly.html">日次・週次</a>
       <a href="monthly.html" class="active">月次</a>
+      <a href="#" id="diagLink">データ診断</a>
     </div>
     <div class="badge-use">月次確認<br>メンバー用</div>
   </div>
@@ -49,6 +44,8 @@
 <div class="wrap">
   <div id="errorBox" class="err"></div>
   <div id="loading" class="loading">データを読み込んでいます…</div>
+  <div id="diagBox" class="card" style="display:none;margin-bottom:16px"></div>
+
   <div id="main" style="display:none">
 
     <!-- 1. 粗利をつくる4要素 -->
@@ -62,7 +59,7 @@
       </div>
       <div class="tree" id="tree"></div>
       <p style="font-size:10.5px;color:var(--muted);margin:10px 0 0">
-        ※ 完工売上・完工粗利（日次・週次ページ）は完工年月ベース。この分解は発生年月ベースなので、追う対象が違うと数字は一致しない。</p>
+        ※ 完工売上（日次・週次ページ）は完工年月ベース。この分解は発生年月ベースなので、追う対象が違うと数字は一致しない。</p>
     </div>
 
     <!-- 2. 価格帯別 -->
@@ -104,9 +101,9 @@
 /* =========================================================
    月次ダッシュボード
    ========================================================= */
-let ALL = [], MINE = [], P = getParams(), YEAR;
-let RATE_MODE = 'occur';     // occur | survey
-let MEDIA_LEVEL = 'mediaM';  // mediaM | mediaL | mediaS
+let ALL = [], MINE = [], P = null, YEAR = 0;
+let RATE_MODE = 'occur';
+let MEDIA_LEVEL = 'mediaM';
 
 (async function init() {
   P = getParams();
@@ -116,11 +113,13 @@ let MEDIA_LEVEL = 'mediaM';  // mediaM | mediaL | mediaS
     ALL = await loadDeals('発生案件');
     MINE = applyFilter(ALL, P);
     buildSelectors(ALL, P, navigateBySelectors);
+    mountDiagnostics(P);
     bindToggles();
     render();
     document.getElementById('main').style.display = 'block';
   } catch (e) {
     showError(e.message || String(e));
+    mountDiagnostics({ debug: true });
   } finally {
     setLoading(false);
   }
@@ -140,10 +139,8 @@ function bindToggles() {
 }
 
 function render() {
-  const label = [P.branch || '全支店', P.owner ? '担当者：' + P.owner : '全担当'].join('　');
-  document.getElementById('chipTitle').textContent = label;
-  document.title = `${label}｜月次`;
-
+  document.getElementById('chipTitle').textContent = filterLabel(P);
+  document.title = filterLabel(P) + '｜月次';
   renderTree();
   renderBands();
   renderMedia();
@@ -151,14 +148,9 @@ function render() {
   renderSurvey();
 }
 
-/* 発生コホート＝その年に発生（反響）した案件 */
-function cohortOf(deals) {
-  return deals.filter(d => sameYear(d.inquiry, YEAR) || d.occurYear === YEAR);
-}
-/* 受注＝そのうち契約に至ったもの */
+const cohortOf = deals => deals.filter(d => sameYear(d.inquiry, YEAR) || d.occurYear === YEAR);
 const wonOf = list => list.filter(d => !!d.contract && !d.lost);
-/* 案件の粗利（完工済は最終粗利、未完工は契約時粗利） */
-const profitOf = d => d.complete ? d.profit : (d.plannedProfit !== null ? d.plannedProfit : d.profit);
+const profitOf = d => (d.profit !== null ? d.profit : d.plannedProfit);
 
 /* ---------- 1. 4要素 ---------- */
 function renderTree() {
@@ -175,8 +167,7 @@ function renderTree() {
   const surveyRate = cohort.length ? surveyed.length / cohort.length : null;
   const closeRate  = surveyed.length ? won.length / surveyed.length : null;
 
-  document.getElementById('cohortTitle').textContent =
-    `発生コホートの粗利分解（${YEAR}年通期）`;
+  document.getElementById('cohortTitle').textContent = `発生コホートの粗利分解（${YEAR}年通期）`;
   document.getElementById('cohortDesc').textContent =
     `${YEAR}年（1〜12月）に発生した案件が、最終的にいくらの粗利になったか。4つの掛け算がそのまま粗利になる恒等式なので、どれを動かすかの議論に使う。`;
 
@@ -185,13 +176,12 @@ function renderTree() {
   const op = s => `<div class="op">${s}</div>`;
 
   const first = RATE_MODE === 'occur'
-    ? node('発生数', `${cohort.length}<small>件</small>`, '集客量')
+    ? node('発生数', `${cohort.length.toLocaleString('ja-JP')}<small>件</small>`, '集客量')
       + op('×') + node('発生成約率', fmtPct(occurRate), `現調率 ${fmtPct(surveyRate)} × 現調成約率 ${fmtPct(closeRate)}`)
-    : node('現調数', `${surveyed.length}<small>件</small>`, `発生 ${cohort.length}件 × 現調率 ${fmtPct(surveyRate)}`)
+    : node('現調数', `${surveyed.length.toLocaleString('ja-JP')}<small>件</small>`, `発生 ${cohort.length}件 × 現調率 ${fmtPct(surveyRate)}`)
       + op('×') + node('現調成約率', fmtPct(closeRate), '提案〜クロージングの質');
 
-  document.getElementById('tree').innerHTML =
-    first
+  document.getElementById('tree').innerHTML = first
     + op('×') + node('平均単価', `${fmtMan(avg)}<small>万円</small>`, '提案の幅')
     + op('×') + node('粗利率', fmtPct(pr), '見積・原価管理')
     + op('=') + node('粗利（発生コホート）', `${fmtMil(profit)}<small>百万円</small>`, 'この4つ以外で粗利は動かない', 'result');
@@ -200,13 +190,9 @@ function renderTree() {
 /* ---------- 2. 価格帯別 ---------- */
 function renderBands() {
   const cohort = cohortOf(MINE);
-  const allCohort = cohortOf(ALL);
-  const avgWin = allCohort.length ? wonOf(allCohort).length / allCohort.length : 0;
-
-  // 会社全体（または本人）の平均受注率を黒線で出す
   const myAvg = cohort.length ? wonOf(cohort).length / cohort.length : 0;
   document.getElementById('avgNote').textContent =
-    `黒線＝${P.owner ? '本人' : '全社'}平均の受注率 ${fmtPct(myAvg)}`;
+    `黒線＝${P.owner ? '本人' : '選択範囲'}平均の受注率 ${fmtPct(myAvg)}`;
 
   const map = groupBy(cohort, d => d.priceBand, '価格帯 未入力');
   const keys = [...CONFIG.priceBandOrder.filter(k => map.has(k)),
@@ -215,55 +201,45 @@ function renderBands() {
 
   const rowFor = (label, list) => {
     const won = wonOf(list);
-    const done = list.filter(d => !!d.complete);
+    const done = list.filter(d => d.isCompleted);
     const winRate = list.length ? won.length / list.length : null;
     const amount = sum(won, d => d.amount);
-    const avg = won.length ? amount / won.length : null;
-
     const pAmt = sum(won.filter(d => d.plannedRate !== null), d => d.amount);
     const pPrf = sum(won.filter(d => d.plannedRate !== null), d => d.plannedProfit);
     const dAmt = sum(done.filter(d => d.finalRate !== null), d => d.amount);
     const dPrf = sum(done.filter(d => d.finalRate !== null), d => d.profit);
     const planRate = pAmt ? pPrf / pAmt : null;
     const doneRate = dAmt ? dPrf / dAmt : null;
-    const loss = (planRate !== null && doneRate !== null) ? doneRate - planRate : null;
-    const lossCount = done.filter(d => d.loss !== null && d.loss < 0).length;
-
     const bar = winRate === null ? '' : `
       <div class="inbar">
         <i style="width:${Math.min(100, winRate * 100)}%;background:${
           winRate >= 0.5 ? 'var(--green)' : winRate >= 0.4 ? 'var(--orange)' : 'var(--red)'}"></i>
-        <span class="avg" style="left:${Math.min(100, myAvg * 100)}%"></span>
-      </div>`;
-
-    return { label, list, won, done, winRate, avg, planRate, doneRate, loss, lossCount, bar };
+        <span class="avg" style="left:${Math.min(100, myAvg * 100)}%"></span></div>`;
+    return { label, list, won, done, winRate, bar,
+      avg: won.length ? amount / won.length : null, planRate, doneRate,
+      loss: (planRate !== null && doneRate !== null) ? doneRate - planRate : null,
+      lossCount: done.filter(d => d.loss !== null && d.loss < 0).length };
   };
 
   const rows = keys.map(k => rowFor(k, map.get(k)));
   const total = rowFor('合計', cohort);
 
-  const tr = r => {
-    const unset = r.label === '価格帯 未入力';
-    if (unset) {
-      return `<tr style="background:#fdf3f2">
-        <td class="l"><b>${esc(r.label)}</b></td><td class="num">${r.list.length}</td>
-        <td class="c">―</td><td class="c">―</td>
-        <td colspan="6" class="l" style="color:#8e2a1e">正規価格帯が空欄。シートに価格帯を入れると、この${r.list.length}件も集計に入ります</td></tr>`;
-    }
-    return `<tr>
-      <td class="l"><b>${esc(r.label)}</b></td>
-      <td class="num">${r.list.length}</td>
-      <td class="num">${r.won.length}</td>
-      <td class="num"><b>${fmtPct(r.winRate)}</b></td>
-      <td>${r.bar}</td>
-      <td class="num">${fmtMan(r.avg)}万</td>
-      <td class="num">${r.done.length}</td>
-      <td class="num">${fmtPct(r.planRate)}</td>
-      <td class="num">${fmtPct(r.doneRate)}</td>
-      <td class="num ${r.loss !== null && r.loss < -0.03 ? 'neg' : ''}">${fmtPt(r.loss)}</td>
-      <td class="num ${r.lossCount >= 3 ? 'neg' : ''}">${r.lossCount}</td>
-    </tr>`;
-  };
+  const tr = r => r.label === '価格帯 未入力'
+    ? `<tr style="background:#fdf3f2"><td class="l"><b>${esc(r.label)}</b></td>
+        <td class="num">${r.list.length}</td><td class="c">―</td><td class="c">―</td>
+        <td colspan="7" class="l" style="color:#8e2a1e">正規価格帯が空欄。入力するとこの${r.list.length}件も集計に入ります</td></tr>`
+    : `<tr>
+        <td class="l"><b>${esc(r.label)}</b></td>
+        <td class="num">${r.list.length.toLocaleString('ja-JP')}</td>
+        <td class="num">${r.won.length.toLocaleString('ja-JP')}</td>
+        <td class="num"><b>${fmtPct(r.winRate)}</b></td>
+        <td>${r.bar}</td>
+        <td class="num">${fmtMan(r.avg)}万</td>
+        <td class="num">${r.done.length.toLocaleString('ja-JP')}</td>
+        <td class="num">${fmtPct(r.planRate)}</td>
+        <td class="num">${fmtPct(r.doneRate)}</td>
+        <td class="num ${r.loss !== null && r.loss < -0.03 ? 'neg' : ''}">${fmtPt(r.loss)}</td>
+        <td class="num ${r.lossCount >= 3 ? 'neg' : ''}">${r.lossCount}</td></tr>`;
 
   document.getElementById('bandTable').innerHTML = `
     <thead><tr>
@@ -271,26 +247,25 @@ function renderBands() {
       <th>平均単価</th><th>完工</th><th>契約時粗利</th><th>完工粗利</th><th>毀損</th><th>毀損件数</th>
     </tr></thead>
     <tbody>${rows.map(tr).join('')}
-      <tr class="total">
-        <td class="l">合計</td><td class="num">${total.list.length}</td><td class="num">${total.won.length}</td>
+      <tr class="total"><td class="l">合計</td>
+        <td class="num">${total.list.length.toLocaleString('ja-JP')}</td>
+        <td class="num">${total.won.length.toLocaleString('ja-JP')}</td>
         <td class="num">${fmtPct(total.winRate)}</td><td>${total.bar}</td>
-        <td class="num">${fmtMan(total.avg)}万</td><td class="num">${total.done.length}</td>
+        <td class="num">${fmtMan(total.avg)}万</td>
+        <td class="num">${total.done.length.toLocaleString('ja-JP')}</td>
         <td class="num">${fmtPct(total.planRate)}</td><td class="num">${fmtPct(total.doneRate)}</td>
         <td class="num ${total.loss !== null && total.loss < 0 ? 'neg' : ''}">${fmtPt(total.loss)}</td>
-        <td class="num">${total.lossCount}</td>
-      </tr>
+        <td class="num">${total.lossCount}</td></tr>
     </tbody>`;
 
-  // コメントを自動生成
-  const worst = rows.filter(r => r.loss !== null && r.label !== '価格帯 未入力')
-                    .sort((a, b) => a.loss - b.loss)[0];
+  const worst = rows.filter(r => r.loss !== null && r.label !== '価格帯 未入力').sort((a, b) => a.loss - b.loss)[0];
   const totalLossCount = rows.reduce((a, r) => a + r.lossCount, 0);
   document.getElementById('bandComment').innerHTML = worst
     ? `毀損がいちばん大きいのは <b>${esc(worst.label)}</b>（${fmtPt(worst.loss)}）。毀損${totalLossCount}件のうち${worst.lossCount}件がこの帯にあります。`
     : '契約時粗利を出すには「予算（実行予算）」列が必要です。';
 
   document.getElementById('lossHint').innerHTML =
-    '契約時粗利＝<b>契約金額（税込）−予算</b>、完工粗利＝<b>最終粗利率</b>、毀損＝その差（pt）で計算しています。'
+    '契約時粗利＝<b>契約金額（税込）−予算</b>、完工粗利＝<b>最終粗利率</b>、毀損＝その差（pt）。'
     + '予算が空欄の案件は毀損の集計から外れます。';
 }
 
@@ -302,8 +277,8 @@ function renderMedia() {
 
   const rows = [...map.entries()].map(([k, list]) => {
     const won = wonOf(list);
-    return { k, n: list.length, w: won.length, rate: list.length ? won.length / list.length : null,
-             amount: sum(won, d => d.amount) };
+    return { k, n: list.length, w: won.length,
+      rate: list.length ? won.length / list.length : null, amount: sum(won, d => d.amount) };
   }).sort((a, b) => b.n - a.n);
 
   const totalWon = wonOf(cohort);
@@ -311,24 +286,24 @@ function renderMedia() {
 
   document.getElementById('mediaTable').innerHTML = `
     <thead><tr><th class="l">媒体</th><th>発生</th><th>受注</th><th>受注率</th><th>水準</th><th>契約売上</th></tr></thead>
-    <tbody>${rows.map(r => `
+    <tbody>${rows.slice(0, 15).map(r => `
       <tr><td class="l">${esc(r.k)}</td>
-        <td class="num">${r.n}</td><td class="num">${r.w}</td>
+        <td class="num">${r.n.toLocaleString('ja-JP')}</td><td class="num">${r.w.toLocaleString('ja-JP')}</td>
         <td class="num"><b>${fmtPct(r.rate)}</b></td>
         <td><div class="inbar"><i style="width:${Math.min(100, (r.rate || 0) * 100)}%;background:${
           r.rate >= 0.5 ? 'var(--green)' : r.rate >= 0.4 ? 'var(--orange)' : 'var(--red)'}"></i>
           <span class="avg" style="left:${Math.min(100, myAvg * 100)}%"></span></div></td>
         <td class="num">${fmtMan(r.amount)}</td></tr>`).join('')
       || '<tr><td colspan="6" class="empty">データなし</td></tr>'}
-      <tr class="total"><td class="l">合計</td><td class="num">${cohort.length}</td>
-        <td class="num">${totalWon.length}</td><td class="num">${fmtPct(cohort.length ? totalWon.length / cohort.length : null)}</td>
+      <tr class="total"><td class="l">合計</td><td class="num">${cohort.length.toLocaleString('ja-JP')}</td>
+        <td class="num">${totalWon.length.toLocaleString('ja-JP')}</td>
+        <td class="num">${fmtPct(cohort.length ? totalWon.length / cohort.length : null)}</td>
         <td></td><td class="num">${fmtMan(totalAmt)}</td></tr>
     </tbody>`;
 
   document.getElementById('mediaNote').textContent = `${rows.length}媒体`;
-
   const top2 = rows.slice(0, 2);
-  const share = totalAmt ? (top2.reduce((a, r) => a + r.amount, 0)) / totalAmt : null;
+  const share = totalAmt ? top2.reduce((a, r) => a + r.amount, 0) / totalAmt : null;
   document.getElementById('mediaComment').innerHTML = top2.length === 2
     ? `上位2媒体（${esc(top2[0].k)}・${esc(top2[1].k)}）で契約売上の <b>${fmtPct(share, 0)}</b> を占めています。`
     : '';
@@ -336,15 +311,13 @@ function renderMedia() {
 
 /* ---------- 4. 粗利毀損の中身 ---------- */
 function renderLoss() {
-  const done = MINE.filter(d => sameYear(d.complete, YEAR));
+  const done = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
   const lossDeals = done.filter(d => d.lossYen !== null && d.lossYen < 0);
   const lossTotal = Math.abs(sum(lossDeals, d => d.lossYen));
-
   document.getElementById('lossNote').textContent =
     `完工${done.length}件中 ${lossDeals.length}件・${fmtMan(lossTotal)}万`;
 
   const hasReason = MINE.some(d => d.lossReason);
-
   let inner;
   if (hasReason) {
     const map = groupBy(lossDeals, d => d.lossReason, '要因 未入力');
@@ -358,24 +331,20 @@ function renderLoss() {
         <td><div class="inbar"><i style="width:${(r.yen / max) * 100}%;background:var(--red)"></i></div></td></tr>`).join('')}
       </tbody>`;
   } else {
-    // 要因列が無いので、毀損の大きい案件を並べる
     const top = [...lossDeals].sort((a, b) => a.lossYen - b.lossYen).slice(0, 6);
     inner = `<thead><tr><th class="l">毀損の大きい案件</th><th>契約時</th><th>完工</th><th>毀損</th></tr></thead>
       <tbody>${top.length ? top.map(d => `<tr>
         <td class="l">${esc(d.name || '(案件名なし)')}</td>
-        <td class="num">${fmtPct(d.plannedRate)}</td>
-        <td class="num">${fmtPct(d.finalRate)}</td>
+        <td class="num">${fmtPct(d.plannedRate)}</td><td class="num">${fmtPct(d.finalRate)}</td>
         <td class="num neg">${fmtMan(Math.abs(d.lossYen))}万</td></tr>`).join('')
-        : '<tr><td colspan="4" class="empty">毀損している完工案件はありません</td></tr>'}
-      </tbody>`;
+        : '<tr><td colspan="4" class="empty">毀損している完工案件はありません</td></tr>'}</tbody>`;
   }
   document.getElementById('lossTable').innerHTML = inner;
 
-  const avgLoss = lossDeals.length ? lossTotal / lossDeals.length : null;
   const big = done.filter(d => (d.amount || 0) >= 5000000);
   document.getElementById('lossSummary').innerHTML = `
     <table><tbody>
-      <tr><td class="l">1件平均毀損額</td><td class="num"><b>${fmtMan1(avgLoss)}万</b></td></tr>
+      <tr><td class="l">1件平均毀損額</td><td class="num"><b>${lossDeals.length ? fmtMan1(lossTotal / lossDeals.length) : '―'}万</b></td></tr>
       <tr><td class="l">完工のうち500万以上</td><td class="num"><b>${big.length}件</b>／${done.length}件</td></tr>
       <tr><td class="l">うち毀損している件数</td><td class="num"><b class="neg">${big.filter(d => d.lossYen !== null && d.lossYen < 0).length}件</b></td></tr>
     </tbody></table>`;
@@ -383,22 +352,21 @@ function renderLoss() {
   if (!hasReason) {
     document.getElementById('lossHint').innerHTML +=
       '<br><b>要因の内訳（A2 見積漏れ・原価甘い／B1 発注ミス・漏れ など）は、いまのシートに列がありません。</b>'
-      + '発生案件シートに <b>毀損要因</b> 列を作って要因コードを入れれば、この表が自動で要因別の集計に切り替わります。';
+      + '発生案件シートに <b>毀損要因</b> 列を足せば、この表が自動で要因別に切り替わります。';
   }
 }
 
 /* ---------- 5. アンケート ---------- */
 function renderSurvey() {
-  const done = MINE.filter(d => sameYear(d.complete, YEAR));
+  const done = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
   document.getElementById('surveyNote').textContent = `完工${done.length}件が対象`;
   document.getElementById('surveyCard').innerHTML = `
     <div class="note-box" style="margin:0">
       <b>アンケートは発生案件シートに項目が無いため、まだ数字を出せません。</b><br>
       別シート（例：<b>アンケート</b>）に「システムID／依頼日／回収日／満足度／紹介意向／担当者評価／自由記述」を持たせて、
       システムIDで発生案件とつなぐのがいちばん手間が少ないです。
-      シートを用意したら <code>api/GetSheetData/index.js</code> の ALLOWED_SHEETS はすでに 'アンケート' を許可してあるので、
-      <code>loadDeals('アンケート')</code> で読み込めます。<br>
-      出す指標は、回収率（依頼◯枚→回収◯枚）・「満足」以上・「ぜひ紹介したい」・担当者の人柄評価・完工から1か月以上の未回収、の5本立てを想定しています。
+      APIは <code>ALLOWED_SHEETS</code> に 'アンケート' を許可済みなので、シートを作れば読み込めます。<br>
+      出す指標は、回収率・「満足」以上・「ぜひ紹介したい」・担当者の人柄評価・完工から1か月以上の未回収、の5本立てを想定しています。
     </div>`;
 }
 </script>

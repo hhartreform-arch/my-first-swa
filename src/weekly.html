@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -11,8 +10,9 @@
 
 <div class="topbar">
   <div class="topbar-inner">
-    <span class="title-chip" id="chipTitle">支店／担当者</span>
+    <span class="title-chip" id="chipTitle">読み込み中</span>
     <div class="selects">
+      <select id="blockSelect"></select>
       <select id="branchSelect"></select>
       <select id="ownerSelect"></select>
       <select id="yearSelect"></select>
@@ -20,6 +20,7 @@
     <div class="navlinks">
       <a href="weekly.html" class="active">日次・週次</a>
       <a href="monthly.html">月次</a>
+      <a href="#" id="diagLink">データ診断</a>
     </div>
     <div class="badge-use">日次・週次確認<br>メンバー用</div>
   </div>
@@ -28,11 +29,13 @@
 <div class="wrap">
   <div id="errorBox" class="err"></div>
   <div id="loading" class="loading">データを読み込んでいます…</div>
+  <div id="diagBox" class="card" style="display:none;margin-bottom:16px"></div>
+
   <div id="main" style="display:none">
 
     <!-- 1. 今年の実績 -->
     <h2 class="sec">今年の実績
-      <span class="note">濃い塗り＝実績／斜線＝見込み（S・Aのみ）／赤線＝目標</span>
+      <span class="note">濃い塗り＝実績／斜線＝見込み／赤線＝目標　完工は<b>完成日(予定)</b>ベース</span>
     </h2>
     <div class="grid2">
       <div class="card">
@@ -99,30 +102,38 @@
 /* =========================================================
    日次・週次ダッシュボード
    ========================================================= */
-let ALL = [], MINE = [], P = getParams(), YEAR, NOW = today();
+let ALL = [], MINE = [], TARGET_ROWS = null, TGT = null;
+let P = null, YEAR = 0;
+const NOW = today();
+
+/* 完工した案件の粗利（最終粗利が無ければ契約時粗利を使う） */
+const profitOf = d => (d.profit !== null ? d.profit : d.plannedProfit);
 
 (async function init() {
   P = getParams();
   YEAR = P.year;
   try {
     setLoading(true);
-    ALL = await loadDeals('発生案件');
+    const [deals, targets] = await Promise.all([loadDeals('発生案件'), loadTargets()]);
+    ALL = deals;
+    TARGET_ROWS = targets;
     MINE = applyFilter(ALL, P);
+    TGT = targetsFrom(TARGET_ROWS, P, YEAR);
     buildSelectors(ALL, P, navigateBySelectors);
+    mountDiagnostics(P);
     render();
     document.getElementById('main').style.display = 'block';
   } catch (e) {
     showError(e.message || String(e));
+    mountDiagnostics({ debug: true });
   } finally {
     setLoading(false);
   }
 })();
 
 function render() {
-  const label = [P.branch || '全支店', P.owner ? '担当者：' + P.owner : '全担当'].join('　');
-  document.getElementById('chipTitle').textContent = label;
-  document.title = `${label}｜日次・週次`;
-
+  document.getElementById('chipTitle').textContent = filterLabel(P);
+  document.title = filterLabel(P) + '｜日次・週次';
   renderPerformance();
   renderMonthTable();
   renderKpi();
@@ -133,47 +144,41 @@ function render() {
 
 /* ---------- 1. 今年の実績 ---------- */
 function renderPerformance() {
-  const t = targetsFor(P.owner);
-  const yearSalesTarget = t.sales.reduce((a, b) => a + b, 0);
+  const yearSalesTarget = TGT.sales.reduce((a, b) => a + b, 0);
 
   // 契約売上
   const contracted = MINE.filter(d => sameYear(d.contract, YEAR) && !d.lost);
   const cAmount = sum(contracted, d => d.amount);
-  const cCount  = contracted.length;
-  // 見込み：契約前でランクS・A
-  const openDeals = MINE.filter(d => !d.lost && !d.contract);
-  const forecast  = openDeals.filter(d => CONFIG.forecastRanks.includes(d.rank));
-  const cForecast = cAmount + sum(forecast, d => d.amount);
-  const cTarget = CONFIG.contractTargetYear * 10000;
-
+  const open = MINE.filter(d => !d.lost && !d.contract);
+  const forecast = open.filter(d => CONFIG.forecastRanks.includes(d.rank));
   drawPerf('perfContract', {
-    actual: cAmount, forecast: cForecast, target: cTarget,
-    lines: [
-      `契約件数 ${cCount}件`,
-      `平均単価 ${cCount ? fmtMan(cAmount / cCount) : '―'}万`
-    ]
+    actual: cAmount,
+    forecast: cAmount + sum(forecast, d => d.amount),
+    target: yearSalesTarget * CONFIG.contractTargetRatio,
+    lines: [`契約件数 ${contracted.length}件`,
+            `平均単価 ${contracted.length ? fmtMan(cAmount / contracted.length) : '―'}万`,
+            `見込みは契約前のS・Aのみ`]
   });
 
-  // 完工売上
-  const done = MINE.filter(d => sameYear(d.complete, YEAR));
+  // 完工売上（完成日(予定)ベース）
+  const done    = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
+  const willDo  = MINE.filter(d => d.isPlanned   && sameYear(d.completeBase, YEAR));
   const dAmount = sum(done, d => d.amount);
-  const dProfit = sum(done, d => d.profit);
-  // 見込み：未完工で完成予定が今年のもの
-  const willDone = MINE.filter(d => !d.complete && !d.lost && d.contract && sameYear(d.completePlan, YEAR));
+  const dProfit = sum(done, d => profitOf(d));
   drawPerf('perfComplete', {
-    actual: dAmount, forecast: dAmount + sum(willDone, d => d.amount), target: yearSalesTarget,
-    lines: [
-      `完工件数 ${done.length}件`,
-      `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`
-    ]
+    actual: dAmount,
+    forecast: dAmount + sum(willDo, d => d.amount),
+    target: yearSalesTarget,
+    lines: [`完工件数 ${done.length}件`,
+            `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`,
+            `未完工の予定 ${willDo.length}件・${fmtMan(sum(willDo, d => d.amount))}万`]
   });
 }
 
 function drawPerf(id, { actual, forecast, target, lines }) {
   const max = Math.max(actual, forecast, target) * 1.05 || 1;
   const pct = v => Math.min(100, (v / max) * 100);
-  const rate = target ? actual / target : null;
-
+  const r = target ? actual / target : null;
   document.getElementById(id).innerHTML = `
     <div class="bar">
       <div class="fill" style="width:${pct(actual)}%"></div>
@@ -184,134 +189,134 @@ function drawPerf(id, { actual, forecast, target, lines }) {
       <span>実績 <span class="big">${fmtMan(actual)}</span>万</span>
       <span class="muted">／ 見込 ${fmtMan(forecast)}万</span>
       <span class="pill" style="margin-left:auto">目標 ${fmtMan(target)}万・達成率
-        <b>${rate === null ? '―' : fmtPct(rate, 0)}</b></span>
+        <b>${r === null ? '―' : fmtPct(r, 0)}</b></span>
     </div>
     <div class="perf-nums muted">${lines.map(t => `<span>${esc(t)}</span>`).join('')}</div>`;
 }
 
-/* ---------- 2. 月次推移（完工ベース） ---------- */
+/* ---------- 2. 月次推移（完成日(予定)ベース） ---------- */
 function renderMonthTable() {
-  const t = targetsFor(P.owner);
   const cur = monthlyBuckets(), prev = monthlyBuckets(), fc = monthlyBuckets();
+  const showPrev = (YEAR - 1) >= CONFIG.minYear;
 
   MINE.forEach(d => {
-    if (sameYear(d.complete, YEAR))     { const m = d.complete.getMonth(); cur[m].amount += d.amount || 0; cur[m].profit += d.profit || 0; cur[m].count++; }
-    if (sameYear(d.complete, YEAR - 1)) { const m = d.complete.getMonth(); prev[m].amount += d.amount || 0; prev[m].profit += d.profit || 0; }
-    if (!d.complete && !d.lost && d.contract && sameYear(d.completePlan, YEAR)) {
-      const m = d.completePlan.getMonth(); fc[m].amount += d.amount || 0;
-      fc[m].profit += (d.plannedProfit !== null ? d.plannedProfit : 0);
+    if (d.isCompleted && sameYear(d.completeBase, YEAR)) {
+      const m = d.completeBase.getMonth();
+      cur[m].amount += d.amount || 0; cur[m].profit += profitOf(d) || 0; cur[m].count++;
+    }
+    if (d.isPlanned && sameYear(d.completeBase, YEAR)) {
+      const m = d.completeBase.getMonth();
+      fc[m].amount += d.amount || 0; fc[m].profit += profitOf(d) || 0;
+    }
+    if (showPrev && d.isCompleted && sameYear(d.completeBase, YEAR - 1)) {
+      const m = d.completeBase.getMonth();
+      prev[m].amount += d.amount || 0;
     }
   });
 
-  const months = Array.from({ length: 12 }, (_, i) => i);
+  const months = [...Array(12).keys()];
   const cum = arr => { let s = 0; return arr.map(v => (s += v)); };
-  const sT   = months.map(i => t.sales[i]  || 0);
-  const pT   = months.map(i => t.profit[i] || 0);
-  const sA   = cur.map(b => b.amount), pA = cur.map(b => b.profit);
-  const sPrev= prev.map(b => b.amount);
-  const sFc  = fc.map(b => b.amount);
-
+  const sT = TGT.sales, pT = TGT.profit;
+  const sA = cur.map(b => b.amount), pA = cur.map(b => b.profit);
+  const sF = fc.map(b => b.amount);
+  const sP = prev.map(b => b.amount);
+  const total = a => a.reduce((x, y) => x + y, 0);
   const ratio = (a, b) => b ? a / b : null;
-  const cellNum = (v, cls = '') => `<td class="num ${cls}">${v === null ? '―' : fmtMan(v)}</td>`;
-  const cellPct = v => `<td class="num ${v !== null && v < 1 ? 'neg' : 'pos'}">${v === null ? '―' : fmtPct(v, 1)}</td>`;
 
-  const row = (label, cells, cls = '') =>
-    `<tr class="${cls}"><td class="rowlabel">${label}</td>${cells.join('')}</tr>`;
+  const cNum = v => `<td class="num">${v === null || v === 0 ? '―' : fmtMan(v)}</td>`;
+  const cPct = v => `<td class="num ${v !== null && v < 1 ? 'neg' : 'pos'}">${v === null ? '―' : fmtPct(v, 1)}</td>`;
+  const row = (label, cells, cls = '') => `<tr class="${cls}"><td class="rowlabel">${label}</td>${cells.join('')}</tr>`;
 
-  const totalOf = arr => arr.reduce((a, b) => a + b, 0);
-  const sACum = cum(sA), sTCum = cum(sT), pACum = cum(pA), pTCum = cum(pT);
+  const sACum = cum(sA), sTCum = cum(sT), pACum = cum(pA);
 
-  const head = `<thead>
-    <tr><th class="l">${YEAR}年（完工ベース・万円）</th>
-    ${months.map(i => `<th>${i + 1}月</th>`).join('')}<th>通期</th></tr></thead>`;
+  const prevRows = showPrev ? `
+    ${row('売上 前年実績', [...sP.map(cNum), cNum(total(sP))])}
+    ${row('売上 前年対比', [...months.map(i => cPct(ratio(sA[i], sP[i]))), cPct(ratio(total(sA), total(sP)))])}` : '';
 
-  const body = `<tbody>
-    ${row('売上 目標',    [...sT.map(v => cellNum(v)), cellNum(totalOf(sT))], 'accent')}
-    ${row('売上 月実績',  [...sA.map(v => cellNum(v)), cellNum(totalOf(sA))])}
-    ${row('売上 目標対比',[...months.map(i => cellPct(ratio(sA[i], sT[i]))), cellPct(ratio(totalOf(sA), totalOf(sT)))])}
-    ${row('売上 見込み',  [...sFc.map(v => cellNum(v || null)), cellNum(totalOf(sFc))])}
-    ${row('売上 前年実績',[...sPrev.map(v => cellNum(v || null)), cellNum(totalOf(sPrev))])}
-    ${row('売上 前年対比',[...months.map(i => cellPct(ratio(sA[i], sPrev[i]))), cellPct(ratio(totalOf(sA), totalOf(sPrev)))])}
-    ${row('累計 目標',    [...sTCum.map(v => cellNum(v)), cellNum(totalOf(sT))])}
-    ${row('累計 実績',    [...months.map(i => cellNum(sA[i] || sACum[i] ? sACum[i] : null)), cellNum(totalOf(sA))])}
-    ${row('累計 目標対比',[...months.map(i => cellPct(ratio(sACum[i], sTCum[i]))), cellPct(ratio(totalOf(sA), totalOf(sT)))])}
-    ${row('粗利 目標',    [...pT.map(v => cellNum(v)), cellNum(totalOf(pT))], 'accent')}
-    ${row('粗利 月実績',  [...pA.map(v => cellNum(v)), cellNum(totalOf(pA))])}
-    ${row('粗利 目標対比',[...months.map(i => cellPct(ratio(pA[i], pT[i]))), cellPct(ratio(totalOf(pA), totalOf(pT)))])}
-    ${row('累計 粗利実績',[...months.map(i => cellNum(pA[i] || pACum[i] ? pACum[i] : null)), cellNum(totalOf(pA))])}
-    ${row('粗利率',       [...months.map(i => cellPct(ratio(pA[i], sA[i]))), cellPct(ratio(totalOf(pA), totalOf(sA)))])}
-  </tbody>`;
+  document.getElementById('monthTable').innerHTML = `
+    <thead><tr><th class="l">${YEAR}年（完成日(予定)ベース・万円）</th>
+      ${months.map(i => `<th>${i + 1}月</th>`).join('')}<th>通期</th></tr></thead>
+    <tbody>
+      ${row('売上 目標',     [...sT.map(cNum), cNum(total(sT))], 'accent')}
+      ${row('売上 月実績',   [...sA.map(cNum), cNum(total(sA))])}
+      ${row('売上 目標対比', [...months.map(i => cPct(ratio(sA[i], sT[i]))), cPct(ratio(total(sA), total(sT)))])}
+      ${row('売上 見込み',   [...sF.map(cNum), cNum(total(sF))])}
+      ${prevRows}
+      ${row('累計 目標',     [...sTCum.map(cNum), cNum(total(sT))])}
+      ${row('累計 実績',     [...months.map(i => cNum(sACum[i])), cNum(total(sA))])}
+      ${row('累計 目標対比', [...months.map(i => cPct(ratio(sACum[i], sTCum[i]))), cPct(ratio(total(sA), total(sT)))])}
+      ${row('粗利 目標',     [...pT.map(cNum), cNum(total(pT))], 'accent')}
+      ${row('粗利 月実績',   [...pA.map(cNum), cNum(total(pA))])}
+      ${row('粗利 目標対比', [...months.map(i => cPct(ratio(pA[i], pT[i]))), cPct(ratio(total(pA), total(pT)))])}
+      ${row('累計 粗利実績', [...months.map(i => cNum(pACum[i])), cNum(total(pA))])}
+      ${row('粗利率',        [...months.map(i => cPct(ratio(pA[i], sA[i]))), cPct(ratio(total(pA), total(sA)))])}
+    </tbody>`;
 
-  document.getElementById('monthTable').innerHTML = head + body;
-
-  document.getElementById('targetNote').innerHTML =
-    `目標値はシートに無いため <b>shared.js の CONFIG.targets</b> に持たせています`
-    + `（${P.owner ? esc(P.owner) + 'の個別設定が無ければ default を使用' : 'いまは default を表示中'}）。`
-    + `担当者別に入れる場合は CONFIG.targets に担当者名で追加してください。`;
+  const note = document.getElementById('targetNote');
+  if (TGT.source === 'sheet') {
+    note.innerHTML = `目標は「${esc(CONFIG.targetSheet)}」シートの ${TGT.rows} 行を合計しています`
+      + `（${esc(filterLabel(P))}／${YEAR}年度）。`
+      + `担当者の行がある場合は担当者行だけを、無ければ支店の行を使います。`;
+  } else if (TGT.source === 'empty') {
+    note.innerHTML = `<b>「${esc(CONFIG.targetSheet)}」シートに、いまの絞り込み（${esc(filterLabel(P))}／${YEAR}年度）に合う行がありません。</b>`
+      + `目標シートの「ブロック名・支店名・担当者」の表記が発生案件シートと一致しているか確認してください。`;
+  } else {
+    note.innerHTML = `<b>目標シートを読めなかったため、shared.js の CONFIG.fallbackTargets を表示しています。</b>`
+      + `「データ診断」で原因を確認できます。`;
+  }
 }
 
 /* ---------- 3. 今月の状況 ---------- */
 function renderKpi() {
-  const newThisMonth = MINE.filter(d => sameMonth(d.inquiry, NOW)).length;
-  const newThisYear  = MINE.filter(d => sameYear(d.inquiry, YEAR)).length;
-  const active = MINE.filter(d => !d.lost && !d.complete);
-  const open   = active.filter(d => !d.contract);
-  const openAmount = sum(open, d => d.amount);
-  const doneThisMonth = MINE.filter(d => !d.complete && !d.lost && d.contract && sameMonth(d.completePlan, NOW));
+  const newMonth = MINE.filter(d => sameMonth(d.inquiry, NOW)).length;
+  const newYear  = MINE.filter(d => sameYear(d.inquiry, YEAR)).length;
+  const active   = MINE.filter(d => !d.lost && !d.isCompleted);
+  const open     = active.filter(d => !d.contract);
+  const thisMonth = MINE.filter(d => d.contract && !d.lost && sameMonth(d.completeBase, NOW));
 
   const kpis = [
-    { label: '今月の新規対応', value: newThisMonth, unit: '件' },
-    { label: '今年の新規対応', value: newThisYear,  unit: '件' },
-    { label: '進行中の案件',   value: active.length, unit: '件' },
-    { label: '契約前の見込金額', value: Math.round(openAmount / 10000).toLocaleString('ja-JP'), unit: '万' },
-    { label: '今月の完工予定', value: Math.round(sum(doneThisMonth, d => d.amount) / 10000).toLocaleString('ja-JP'), unit: '万' }
+    { label: '今月の新規対応',   value: newMonth.toLocaleString('ja-JP'), unit: '件' },
+    { label: '今年の新規対応',   value: newYear.toLocaleString('ja-JP'),  unit: '件' },
+    { label: '進行中の案件',     value: active.length.toLocaleString('ja-JP'), unit: '件' },
+    { label: '契約前の見込金額', value: fmtMan(sum(open, d => d.amount)), unit: '万' },
+    { label: '今月の完工予定',   value: fmtMan(sum(thisMonth, d => d.amount)), unit: '万' }
   ];
-  document.getElementById('kpiRow').innerHTML = kpis.map(k => `
-    <div class="kpi">
-      <div class="label">${k.label}</div>
-      <div class="value">${k.value}<small>${k.unit}</small></div>
-    </div>`).join('');
+  document.getElementById('kpiRow').innerHTML = kpis.map(k =>
+    `<div class="kpi"><div class="label">${k.label}</div>
+      <div class="value">${k.value}<small>${k.unit}</small></div></div>`).join('');
 }
 
 /* ---------- 4. いま案件がどこにあるか ---------- */
 function renderFunnel() {
   const active = MINE.filter(d => !d.lost);
   const by = s => active.filter(d => d.status === s);
-
-  const thisMonthDone = active.filter(d => !d.complete && d.contract && sameMonth(d.completePlan, NOW));
+  const thisMonth = active.filter(d => d.contract && sameMonth(d.completeBase, NOW));
 
   const boxes = [
-    { key: 'preSurvey',   cls: 'blue',   list: by(STATUS.PRE_SURVEY).filter(d => !d.complete) },
+    { key: 'preSurvey',   cls: 'blue',   list: by(STATUS.PRE_SURVEY) },
     { key: 'surveyed',    cls: 'blue',   list: by(STATUS.SURVEYED) },
     { key: 'quoted',      cls: 'blue',   list: by(STATUS.QUOTED) },
     { key: 'beforeStart', cls: 'green',  list: by(STATUS.BEFORE_START) },
     { key: 'inWork',      cls: 'green',  list: by(STATUS.IN_WORK) },
-    { key: 'thisMonth',   cls: 'orange', list: thisMonthDone, label: '今月完工予定' }
+    { key: 'thisMonth',   cls: 'orange', list: thisMonth, label: '今月完工予定' }
   ];
-
-  document.getElementById('funnel').innerHTML = boxes.map(b => `
-    <div class="fn ${b.cls}">
+  document.getElementById('funnel').innerHTML = boxes.map(b =>
+    `<div class="fn ${b.cls}">
       <div class="t">${b.label || STATUS_LABEL[b.key]}</div>
-      <div class="n">${b.list.length}<small>件</small></div>
+      <div class="n">${b.list.length.toLocaleString('ja-JP')}<small>件</small></div>
       <div class="m">${fmtMan(sum(b.list, d => d.amount))}</div>
     </div>`).join('');
 }
 
 /* ---------- 5. 契約前の案件と見込ランク ---------- */
 function renderPreContract() {
-  const list = MINE.filter(d => !d.lost && !d.contract)
-    .sort((a, b) => (a.plan ? a.plan - 0 : Infinity) - (b.plan ? b.plan - 0 : Infinity));
+  const MAX = 100;
+  const all = MINE.filter(d => !d.lost && !d.contract)
+    .sort((a, b) => (a.plan ? a.plan.getTime() : Infinity) - (b.plan ? b.plan.getTime() : Infinity));
+  const list = all.slice(0, MAX);
 
-  const rankOf = d => {
-    if (d.rank) return d.rank;                 // シートの「見込」を優先
-    if (!d.blockerKnown) return '';            // 阻害要因が未入力なら判定しない
-    return d.blockerLeft === 0 ? 'S' : d.blockerLeft <= 2 ? 'A' : 'B';
-  };
-
-  const head = `<thead><tr>
-    <th class="l">顧客・物件</th><th>金額</th><th>契約予定</th>
-    <th>阻害要因</th><th>残</th><th>ランク</th><th class="l">次にやること</th>
-  </tr></thead>`;
+  const rankOf = d => d.rank || (!d.blockerKnown ? ''
+    : d.blockerLeft === 0 ? 'S' : d.blockerLeft <= 2 ? 'A' : 'B');
 
   const body = list.length ? list.map(d => {
     const r = rankOf(d);
@@ -328,50 +333,54 @@ function renderPreContract() {
     </tr>`;
   }).join('') : `<tr><td colspan="7" class="empty">契約前の案件はありません</td></tr>`;
 
-  document.getElementById('preContractTable').innerHTML = head + `<tbody>${body}</tbody>`;
+  document.getElementById('preContractTable').innerHTML = `
+    <thead><tr><th class="l">顧客・物件</th><th>金額</th><th>契約予定</th>
+      <th>阻害要因</th><th>残</th><th>ランク</th><th class="l">次にやること</th></tr></thead>
+    <tbody>${body}${all.length > MAX
+      ? `<tr><td colspan="7" class="empty">ほか ${all.length - MAX} 件（契約予定日の早い順に${MAX}件まで表示）</td></tr>` : ''}</tbody>`;
 
   const hasBlocker = MINE.some(d => d.blockerKnown);
   document.getElementById('blockerNote').innerHTML = hasBlocker
     ? '阻害要因はシートの「阻害_価格」などの列から読んでいます。'
     : '<b>赤枠（阻害要因）は表示の仕組みはできていますが、いまのシートに元データがありません。</b>'
       + '発生案件シートに <b>阻害_価格／阻害_提案／阻害_担当者／阻害_会社／阻害_時期／阻害_決裁者／阻害_競合</b>'
-      + '（残っていれば 1 か ○、クリアなら空欄）と <b>次にやること</b> の列を足せば、そのまま色が付きます。'
-      + 'ランクは「見込」列の S/A/B を使い、空欄なら阻害要因の残数から判定します。';
+      + '（残っていれば 1 か ○、クリアなら空欄）と <b>次にやること</b> の列を足せば、そのまま色が付きます。';
 }
 
 /* ---------- 6. 着工前／工事中／これから現調 ---------- */
 function renderLists() {
+  const MAX = 50;
   const active = MINE.filter(d => !d.lost);
-
-  const simpleTable = (rows, cols) =>
-    `<thead><tr>${cols.map(c => `<th class="${c.cls || ''}">${c.head}</th>`).join('')}</tr></thead>`
-    + `<tbody>${rows.length ? rows.join('') : `<tr><td colspan="${cols.length}" class="empty">該当なし</td></tr>`}</tbody>`;
-
+  const table = (id, noteId, list, cols, rowFn) => {
+    const shown = list.slice(0, MAX);
+    document.getElementById(id).innerHTML =
+      `<thead><tr>${cols.map(c => `<th class="${c.cls || ''}">${c.head}</th>`).join('')}</tr></thead>`
+      + `<tbody>${shown.length ? shown.map(rowFn).join('')
+          : `<tr><td colspan="${cols.length}" class="empty">該当なし</td></tr>`}
+        ${list.length > MAX ? `<tr><td colspan="${cols.length}" class="empty">ほか ${list.length - MAX} 件</td></tr>` : ''}</tbody>`;
+    if (noteId) document.getElementById(noteId).textContent =
+      `${list.length}件／${fmtMan(sum(list, d => d.amount))}万`;
+  };
   const nameCell = d => `<td class="l"><b>${esc(d.name || '(案件名なし)')}</b><br>
-    <span style="color:var(--muted);font-size:11px">${esc([d.mediaM || d.mediaL, d.cityGroup].filter(Boolean).join('／'))}</span></td>`;
+    <span style="color:var(--muted);font-size:11px">${esc([d.mediaM || d.mediaL, d.branch].filter(Boolean).join('／'))}</span></td>`;
 
-  // 着工前
   const bs = active.filter(d => d.status === STATUS.BEFORE_START);
-  document.getElementById('beforeStartTable').innerHTML = simpleTable(
-    bs.map(d => `<tr>${nameCell(d)}<td class="num">${fmtMan(d.amount)}万</td><td class="c">${fmtM(d.completePlan)}</td></tr>`),
-    [{ head: '顧客・物件', cls: 'l' }, { head: '金額' }, { head: '完工予定' }]);
-  document.getElementById('beforeStartNote').textContent = `${bs.length}件／${fmtMan(sum(bs, d => d.amount))}万`;
+  table('beforeStartTable', 'beforeStartNote', bs,
+    [{ head: '顧客・物件', cls: 'l' }, { head: '金額' }, { head: '完工予定' }],
+    d => `<tr>${nameCell(d)}<td class="num">${fmtMan(d.amount)}万</td><td class="c">${fmtM(d.completeBase)}</td></tr>`);
 
-  // 工事中
   const iw = active.filter(d => d.status === STATUS.IN_WORK);
-  document.getElementById('inWorkTable').innerHTML = simpleTable(
-    iw.map(d => `<tr>${nameCell(d)}<td class="num">${fmtMan(d.amount)}万</td>
-      <td class="c ${sameMonth(d.completePlan, NOW) ? 'pos' : ''}"><b>${fmtM(d.completePlan)}</b></td></tr>`),
-    [{ head: '顧客・物件', cls: 'l' }, { head: '金額' }, { head: '完工予定' }]);
-  document.getElementById('inWorkNote').textContent = `${iw.length}件／${fmtMan(sum(iw, d => d.amount))}万`;
+  table('inWorkTable', 'inWorkNote', iw,
+    [{ head: '顧客・物件', cls: 'l' }, { head: '金額' }, { head: '完工予定' }],
+    d => `<tr>${nameCell(d)}<td class="num">${fmtMan(d.amount)}万</td>
+      <td class="c ${sameMonth(d.completeBase, NOW) ? 'pos' : ''}"><b>${fmtM(d.completeBase)}</b></td></tr>`);
 
-  // これから現調
   const ps = active.filter(d => d.status === STATUS.PRE_SURVEY)
     .sort((a, b) => (b.inquiry ? b.inquiry.getTime() : 0) - (a.inquiry ? a.inquiry.getTime() : 0));
-  document.getElementById('preSurveyTable').innerHTML = simpleTable(
-    ps.map(d => `<tr>${nameCell(d)}<td class="c">${d.inquiry ? fmtMD(d.inquiry) : '―'}</td>
-      <td class="c">${d.survey ? fmtMD(d.survey) : '<b style="color:var(--orange)">日程調整中</b>'}</td></tr>`),
-    [{ head: '顧客・物件', cls: 'l' }, { head: '反響日' }, { head: '現調予定' }]);
+  table('preSurveyTable', null, ps,
+    [{ head: '顧客・物件', cls: 'l' }, { head: '反響日' }, { head: '現調予定' }],
+    d => `<tr>${nameCell(d)}<td class="c">${fmtMD(d.inquiry)}</td>
+      <td class="c">${d.survey ? fmtMD(d.survey) : '<b style="color:var(--orange)">日程調整中</b>'}</td></tr>`);
   document.getElementById('preSurveyNote').textContent = `${ps.length}件`;
 }
 </script>
