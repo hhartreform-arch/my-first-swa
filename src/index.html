@@ -13,14 +13,10 @@
     </div>
 
     <script>
-        // 1. スプレッドシートのCSV出力URL（★自分のシートIDに書き換えてください）
-        const sheetId = '12bLSGCov_nXMiyU-GH1rUdb5ZPEWxe1iNAJsfK71Vd8';
-        const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
-
         async function drawDashboard() {
             try {
-                // 2. ネットワーク経由でスプレッドシートのデータを取得
-                const response = await fetch(csvUrl);
+                // 2. 自作した裏側のAPIからデータを取得する
+                const response = await fetch('/api/GetSheetData');
                 const csvText = await response.text();
 
                 // 3. 取得したCSVデータをプログラムで扱いやすい形（配列）に整理
