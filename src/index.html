@@ -1,54 +1,73 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <title>スプシ連携ダッシュボード</title>
-    <!-- グラフ描画ライブラリ -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>担当者別ダッシュボード</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .branch { margin-bottom: 18px; }
+  .branch h3 { font-size: 13px; margin: 0 0 8px; color: var(--navy); }
+  .owners { display: flex; flex-wrap: wrap; gap: 6px; }
+  .owners a {
+    text-decoration: none; color: var(--text); background: #fff;
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 12px; font-size: 12.5px;
+  }
+  .owners a:hover { border-color: var(--navy); background: #f2f7fa; }
+  .owners a b { color: var(--navy); }
+  .lead { display: flex; gap: 10px; margin-bottom: 18px; }
+  .lead a {
+    flex: 1; text-decoration: none; background: var(--navy); color: #fff;
+    border-radius: 5px; padding: 14px 16px; font-weight: 700;
+  }
+  .lead a span { display: block; font-size: 11px; font-weight: 400; opacity: .85; }
+</style>
 </head>
 <body>
-    <div style="width: 600px; margin: 30px auto;">
-        <canvas id="myChart"></canvas>
-    </div>
 
-    <!-- ここから下がプログラム（JavaScript）の領域 -->
-    <script>
-        async function drawDashboard() {
-            try {
-                // API経由でデータを取得
-                const response = await fetch('/api/GetSheetData');
-                const csvText = await response.text();
+<div class="topbar"><div class="topbar-inner">
+  <span class="title-chip">担当者別ダッシュボード</span>
+</div></div>
 
-                const rows = csvText.split('\n').slice(1);
-                const chartLabels = [];
-                const chartData = [];
+<div class="wrap">
+  <div id="errorBox" class="err"></div>
+  <div id="loading" class="loading">データを読み込んでいます…</div>
 
-                rows.forEach(row => {
-                    const columns = row.split(',');
-                    if(columns.length >= 2) {
-                        chartLabels.push(columns[0].replace(/"/g, '').trim());
-                        chartData.push(Number(columns[1].replace(/"/g, '').trim()));
-                    }
-                });
+  <div class="lead">
+    <a href="weekly.html">日次・週次確認<span>いま案件がどこにあるか／契約前の見込みランク</span></a>
+    <a href="monthly.html">月次確認<span>粗利の4要素／価格帯別・媒体別／毀損</span></a>
+  </div>
 
-                const ctx = document.getElementById('myChart').getContext('2d');
-                new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: chartLabels,
-                        datasets: [{
-                            label: 'スプレッドシートのデータ',
-                            data: chartData,
-                            backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                            borderWidth: 1
-                        }]
-                    }
-                });
-            } catch (error) {
-                console.error('データの取得に失敗しました:', error);
-            }
-        }
-        drawDashboard();
-    </script>
+  <h2 class="sec">担当者から開く</h2>
+  <div id="list"></div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+(async function () {
+  try {
+    setLoading(true);
+    const deals = await loadDeals('発生案件');
+    const byBranch = groupBy(deals, d => d.branch, '（支店未入力）');
+    const branches = [...byBranch.keys()].sort((a, b) => a.localeCompare(b, 'ja'));
+
+    document.getElementById('list').innerHTML = branches.map(b => {
+      const owners = uniqueSorted(byBranch.get(b).map(d => d.owner));
+      const q = 'branch=' + encodeURIComponent(b);
+      return `<div class="branch">
+        <h3>${esc(b)}（${byBranch.get(b).length}件）</h3>
+        <div class="owners">
+          <a href="weekly.html?${q}"><b>支店全体</b></a>
+          ${owners.map(o => `<a href="weekly.html?${q}&owner=${encodeURIComponent(o)}">${esc(o)}</a>`).join('')}
+        </div></div>`;
+    }).join('');
+  } catch (e) {
+    showError(e.message || String(e));
+  } finally {
+    setLoading(false);
+  }
+})();
+</script>
 </body>
 </html>
