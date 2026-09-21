@@ -168,7 +168,8 @@ function renderPerformance() {
     forecast: dAmount,
     target: yearSalesTarget,
     lines: [`完工件数 ${done.length}件`,
-            `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`]
+            `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`,
+            `見込完工額 ${fmtMan(forecastAmount(open))}万（契約前案件をランク別に加重）`]
   });
 }
 
