@@ -311,7 +311,7 @@ function renderMedia() {
 
 /* ---------- 4. 粗利毀損の中身 ---------- */
 function renderLoss() {
-  const done = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
+  const done = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
   const lossDeals = done.filter(d => d.lossYen !== null && d.lossYen < 0);
   const lossTotal = Math.abs(sum(lossDeals, d => d.lossYen));
   document.getElementById('lossNote').textContent =
@@ -358,7 +358,7 @@ function renderLoss() {
 
 /* ---------- 5. アンケート ---------- */
 function renderSurvey() {
-  const done = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
+  const done = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
   document.getElementById('surveyNote').textContent = `完工${done.length}件が対象`;
   document.getElementById('surveyCard').innerHTML = `
     <div class="note-box" style="margin:0">

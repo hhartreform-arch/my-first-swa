@@ -35,7 +35,7 @@
 
     <!-- 1. 今年の実績 -->
     <h2 class="sec">今年の実績
-      <span class="note">濃い塗り＝実績／斜線＝見込み／赤線＝目標　完工は<b>完成日(予定)</b>ベース</span>
+      <span class="note">濃い塗り＝実績／斜線＝見込み（契約前のみ・S90%＋A70%＋B50%で加重）／赤線＝目標　完工は<b>完成日(予定)</b>が指定年ならすべて実績</span>
     </h2>
     <div class="grid2">
       <div class="card">
@@ -146,32 +146,29 @@ function render() {
 function renderPerformance() {
   const yearSalesTarget = TGT.sales.reduce((a, b) => a + b, 0);
 
-  // 契約売上
+  // 契約売上（実績＝契約日(実績)がその年。見込み＝契約前の案件をランク別に加重）
   const contracted = MINE.filter(d => sameYear(d.contract, YEAR) && !d.lost);
   const cAmount = sum(contracted, d => d.amount);
   const open = MINE.filter(d => !d.lost && !d.contract);
-  const forecast = open.filter(d => CONFIG.forecastRanks.includes(d.rank));
   drawPerf('perfContract', {
     actual: cAmount,
-    forecast: cAmount + sum(forecast, d => d.amount),
+    forecast: cAmount + forecastAmount(open),
     target: yearSalesTarget * CONFIG.contractTargetRatio,
     lines: [`契約件数 ${contracted.length}件`,
             `平均単価 ${contracted.length ? fmtMan(cAmount / contracted.length) : '―'}万`,
-            `見込みは契約前のS・Aのみ`]
+            `見込みはランク別に加重（S90%・A70%・B50%）`]
   });
 
-  // 完工売上（完成日(予定)ベース）
-  const done    = MINE.filter(d => d.isCompleted && sameYear(d.completeBase, YEAR));
-  const willDo  = MINE.filter(d => d.isPlanned   && sameYear(d.completeBase, YEAR));
+  // 完工売上（完成日(予定)ベース。その年に入っていれば、今日より前でも後でも実績）
+  const done    = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
   const dAmount = sum(done, d => d.amount);
   const dProfit = sum(done, d => profitOf(d));
   drawPerf('perfComplete', {
     actual: dAmount,
-    forecast: dAmount + sum(willDo, d => d.amount),
+    forecast: dAmount,
     target: yearSalesTarget,
     lines: [`完工件数 ${done.length}件`,
-            `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`,
-            `未完工の予定 ${willDo.length}件・${fmtMan(sum(willDo, d => d.amount))}万`]
+            `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`]
   });
 }
 
@@ -187,7 +184,7 @@ function drawPerf(id, { actual, forecast, target, lines }) {
     </div>
     <div class="perf-nums">
       <span>実績 <span class="big">${fmtMan(actual)}</span>万</span>
-      <span class="muted">／ 見込 ${fmtMan(forecast)}万</span>
+      ${forecast > actual ? `<span class="muted">／ 見込 ${fmtMan(forecast)}万</span>` : ''}
       <span class="pill" style="margin-left:auto">目標 ${fmtMan(target)}万・達成率
         <b>${r === null ? '―' : fmtPct(r, 0)}</b></span>
     </div>
@@ -196,19 +193,15 @@ function drawPerf(id, { actual, forecast, target, lines }) {
 
 /* ---------- 2. 月次推移（完成日(予定)ベース） ---------- */
 function renderMonthTable() {
-  const cur = monthlyBuckets(), prev = monthlyBuckets(), fc = monthlyBuckets();
+  const cur = monthlyBuckets(), prev = monthlyBuckets();
   const showPrev = (YEAR - 1) >= CONFIG.minYear;
 
   MINE.forEach(d => {
-    if (d.isCompleted && sameYear(d.completeBase, YEAR)) {
+    if (d.isDoneInYear && sameYear(d.completeBase, YEAR)) {
       const m = d.completeBase.getMonth();
       cur[m].amount += d.amount || 0; cur[m].profit += profitOf(d) || 0; cur[m].count++;
     }
-    if (d.isPlanned && sameYear(d.completeBase, YEAR)) {
-      const m = d.completeBase.getMonth();
-      fc[m].amount += d.amount || 0; fc[m].profit += profitOf(d) || 0;
-    }
-    if (showPrev && d.isCompleted && sameYear(d.completeBase, YEAR - 1)) {
+    if (showPrev && d.isDoneInYear && sameYear(d.completeBase, YEAR - 1)) {
       const m = d.completeBase.getMonth();
       prev[m].amount += d.amount || 0;
     }
@@ -218,7 +211,6 @@ function renderMonthTable() {
   const cum = arr => { let s = 0; return arr.map(v => (s += v)); };
   const sT = TGT.sales, pT = TGT.profit;
   const sA = cur.map(b => b.amount), pA = cur.map(b => b.profit);
-  const sF = fc.map(b => b.amount);
   const sP = prev.map(b => b.amount);
   const total = a => a.reduce((x, y) => x + y, 0);
   const ratio = (a, b) => b ? a / b : null;
@@ -240,7 +232,6 @@ function renderMonthTable() {
       ${row('売上 目標',     [...sT.map(cNum), cNum(total(sT))], 'accent')}
       ${row('売上 月実績',   [...sA.map(cNum), cNum(total(sA))])}
       ${row('売上 目標対比', [...months.map(i => cPct(ratio(sA[i], sT[i]))), cPct(ratio(total(sA), total(sT)))])}
-      ${row('売上 見込み',   [...sF.map(cNum), cNum(total(sF))])}
       ${prevRows}
       ${row('累計 目標',     [...sTCum.map(cNum), cNum(total(sT))])}
       ${row('累計 実績',     [...months.map(i => cNum(sACum[i])), cNum(total(sA))])}
@@ -278,7 +269,7 @@ function renderKpi() {
     { label: '今月の新規対応',   value: newMonth.toLocaleString('ja-JP'), unit: '件' },
     { label: '今年の新規対応',   value: newYear.toLocaleString('ja-JP'),  unit: '件' },
     { label: '進行中の案件',     value: active.length.toLocaleString('ja-JP'), unit: '件' },
-    { label: '契約前の見込金額', value: fmtMan(sum(open, d => d.amount)), unit: '万' },
+    { label: '契約前の見込金額', value: fmtMan(forecastAmount(open)), unit: '万' },
     { label: '今月の完工予定',   value: fmtMan(sum(thisMonth, d => d.amount)), unit: '万' }
   ];
   document.getElementById('kpiRow').innerHTML = kpis.map(k =>
@@ -315,11 +306,8 @@ function renderPreContract() {
     .sort((a, b) => (a.plan ? a.plan.getTime() : Infinity) - (b.plan ? b.plan.getTime() : Infinity));
   const list = all.slice(0, MAX);
 
-  const rankOf = d => d.rank || (!d.blockerKnown ? ''
-    : d.blockerLeft === 0 ? 'S' : d.blockerLeft <= 2 ? 'A' : 'B');
-
   const body = list.length ? list.map(d => {
-    const r = rankOf(d);
+    const r = d.rankEff;
     return `<tr>
       <td class="l"><b>${esc(d.name || '(案件名なし)')}</b><br>
         <span style="color:var(--muted);font-size:11px">${esc([d.mediaM || d.mediaL, d.branch, d.owner].filter(Boolean).join('／'))}</span></td>
