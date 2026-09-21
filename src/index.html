@@ -1,36 +1,54 @@
-async function drawDashboard() {
-    try {
-        // Azureの裏側API（先ほど作ったプログラム）へデータを取りに行く
-        const response = await fetch('/api/GetSheetData');
-        const csvText = await response.text();
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>スプシ連携ダッシュボード</title>
+    <!-- グラフ描画ライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div style="width: 600px; margin: 30px auto;">
+        <canvas id="myChart"></canvas>
+    </div>
 
-        const rows = csvText.split('\n').slice(1);
-        const chartLabels = [];
-        const chartData = [];
+    <!-- ここから下がプログラム（JavaScript）の領域 -->
+    <script>
+        async function drawDashboard() {
+            try {
+                // API経由でデータを取得
+                const response = await fetch('/api/GetSheetData');
+                const csvText = await response.text();
 
-        rows.forEach(row => {
-            const columns = row.split(',');
-            if(columns.length >= 2) {
-                chartLabels.push(columns[0].replace(/"/g, '').trim());
-                chartData.push(Number(columns[1].replace(/"/g, '').trim()));
+                const rows = csvText.split('\n').slice(1);
+                const chartLabels = [];
+                const chartData = [];
+
+                rows.forEach(row => {
+                    const columns = row.split(',');
+                    if(columns.length >= 2) {
+                        chartLabels.push(columns[0].replace(/"/g, '').trim());
+                        chartData.push(Number(columns[1].replace(/"/g, '').trim()));
+                    }
+                });
+
+                const ctx = document.getElementById('myChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: chartLabels,
+                        datasets: [{
+                            label: 'スプレッドシートのデータ',
+                            data: chartData,
+                            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                            borderWidth: 1
+                        }]
+                    }
+                });
+            } catch (error) {
+                console.error('データの取得に失敗しました:', error);
             }
-        });
-
-        const ctx = document.getElementById('myChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: chartLabels,
-                datasets: [{
-                    label: 'スプレッドシートのデータ',
-                    data: chartData,
-                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                    borderWidth: 1
-                }]
-            }
-        });
-    } catch (error) {
-        console.error('データの取得に失敗しました:', error);
-    }
-}
-drawDashboard();
+        }
+        drawDashboard();
+    </script>
+</body>
+</html>
