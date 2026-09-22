@@ -35,7 +35,7 @@
 
     <!-- 1. 今年の実績 -->
     <h2 class="sec">今年の実績
-      <span class="note">濃い塗り＝実績／斜線＝見込み（契約前のみ・S90%＋A70%＋B50%で加重）／赤線＝目標　完工は<b>完成日(予定)</b>が指定年ならすべて実績</span>
+      <span class="note">濃い塗り＝実績／斜線＝見込み（契約前案件の見込額を合算）／赤線＝目標　契約売上は<b>契約年</b>、完工売上は<b>完工年</b>で絞込み</span>
     </h2>
     <div class="grid2">
       <div class="card">
@@ -104,6 +104,7 @@
    ========================================================= */
 let ALL = [], MINE = [], TARGET_ROWS = null, TGT = null;
 let P = null, YEAR = 0;
+let FORECAST_COMPLETE = 0;  // 見込完工額（renderPerformanceで算出し、renderKpiでも使う）
 const NOW = today();
 
 /* 完工した案件の粗利（最終粗利が無ければ契約時粗利を使う） */
@@ -146,30 +147,33 @@ function render() {
 function renderPerformance() {
   const yearSalesTarget = TGT.sales.reduce((a, b) => a + b, 0);
 
-  // 契約売上（実績＝契約日(実績)がその年。見込み＝契約前の案件をランク別に加重）
-  const contracted = MINE.filter(d => sameYear(d.contract, YEAR) && !d.lost);
+  // 契約売上（実績＝「契約年」列がその年のものを合算。他の絞り込み条件は問わない）
+  const contracted = MINE.filter(d => d.contractYear === YEAR);
   const cAmount = sum(contracted, d => d.amount);
+  const cCount  = sum(contracted, d => d.cntContract);
   const open = MINE.filter(d => !d.lost && !d.contract);
   drawPerf('perfContract', {
     actual: cAmount,
-    forecast: cAmount + forecastAmount(open),
+    forecast: cAmount + sum(open, d => d.forecastAmt),
     target: yearSalesTarget * CONFIG.contractTargetRatio,
-    lines: [`契約件数 ${contracted.length}件`,
-            `平均単価 ${contracted.length ? fmtMan(cAmount / contracted.length) : '―'}万`,
-            `見込みはランク別に加重（S90%・A70%・B50%）`]
+    lines: [`契約件数 ${cCount.toLocaleString('ja-JP')}件`,
+            `平均単価 ${cCount ? fmtMan(cAmount / cCount) : '―'}万`,
+            `見込みは契約前案件の見込額を合算`]
   });
 
-  // 完工売上（完成日(予定)ベース。その年に入っていれば、今日より前でも後でも実績）
-  const done    = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
+  // 完工売上（実績＝「完工年」列がその年のものを合算。他の絞り込み条件は問わない）
+  const done    = MINE.filter(d => d.completeYear === YEAR);
   const dAmount = sum(done, d => d.amount);
+  const dCount  = sum(done, d => d.cntContract);
   const dProfit = sum(done, d => profitOf(d));
+  FORECAST_COMPLETE = sum(done, d => d.forecastAmt);
   drawPerf('perfComplete', {
     actual: dAmount,
     forecast: dAmount,
     target: yearSalesTarget,
-    lines: [`完工件数 ${done.length}件`,
+    lines: [`完工件数 ${dCount.toLocaleString('ja-JP')}件`,
             `粗利率 ${dAmount ? fmtPct(dProfit / dAmount) : '―'}`,
-            `見込完工額 ${fmtMan(forecastAmount(open))}万（契約前案件をランク別に加重）`]
+            `見込完工額 ${fmtMan(FORECAST_COMPLETE)}万`]
   });
 }
 
@@ -192,18 +196,19 @@ function drawPerf(id, { actual, forecast, target, lines }) {
     <div class="perf-nums muted">${lines.map(t => `<span>${esc(t)}</span>`).join('')}</div>`;
 }
 
-/* ---------- 2. 月次推移（完成日(予定)ベース） ---------- */
+/* ---------- 2. 月次推移（完工年ベース） ---------- */
 function renderMonthTable() {
   const cur = monthlyBuckets(), prev = monthlyBuckets();
   const showPrev = (YEAR - 1) >= CONFIG.minYear;
 
   MINE.forEach(d => {
-    if (d.isDoneInYear && sameYear(d.completeBase, YEAR)) {
-      const m = d.completeBase.getMonth();
+    // 月の内訳は「完工月」列を優先し、無ければ完工基準日から拾う
+    const m = d.completeMonth ? d.completeMonth - 1 : (d.completeBase ? d.completeBase.getMonth() : null);
+    if (m === null || m < 0 || m > 11) return;
+    if (d.completeYear === YEAR) {
       cur[m].amount += d.amount || 0; cur[m].profit += profitOf(d) || 0; cur[m].count++;
     }
-    if (showPrev && d.isDoneInYear && sameYear(d.completeBase, YEAR - 1)) {
-      const m = d.completeBase.getMonth();
+    if (showPrev && d.completeYear === YEAR - 1) {
       prev[m].amount += d.amount || 0;
     }
   });
@@ -263,14 +268,13 @@ function renderKpi() {
   const newMonth = MINE.filter(d => sameMonth(d.inquiry, NOW)).length;
   const newYear  = MINE.filter(d => sameYear(d.inquiry, YEAR)).length;
   const active   = MINE.filter(d => !d.lost && !d.isCompleted);
-  const open     = active.filter(d => !d.contract);
   const thisMonth = MINE.filter(d => d.contract && !d.lost && sameMonth(d.completeBase, NOW));
 
   const kpis = [
     { label: '今月の新規対応',   value: newMonth.toLocaleString('ja-JP'), unit: '件' },
     { label: '今年の新規対応',   value: newYear.toLocaleString('ja-JP'),  unit: '件' },
     { label: '進行中の案件',     value: active.length.toLocaleString('ja-JP'), unit: '件' },
-    { label: '契約前の見込金額', value: fmtMan(forecastAmount(open)), unit: '万' },
+    { label: '契約前の見込金額', value: fmtMan(FORECAST_COMPLETE), unit: '万' },
     { label: '今月の完工予定',   value: fmtMan(sum(thisMonth, d => d.amount)), unit: '万' }
   ];
   document.getElementById('kpiRow').innerHTML = kpis.map(k =>
@@ -312,7 +316,7 @@ function renderPreContract() {
     return `<tr>
       <td class="l"><b>${esc(d.name || '(案件名なし)')}</b><br>
         <span style="color:var(--muted);font-size:11px">${esc([d.mediaM || d.mediaL, d.branch, d.owner].filter(Boolean).join('／'))}</span></td>
-      <td class="num">${fmtMan(d.amount)}万</td>
+      <td class="num">${fmtMan(d.forecastAmt)}万</td>
       <td class="c">${d.plan ? fmtM(d.plan) : (d.planMonth ? d.planMonth + '月' : '未定')}</td>
       <td><div class="chips">${d.blockers.map(b =>
         `<span class="chip ${!d.blockerKnown ? 'none' : (b.remaining ? 'left' : 'clear')}" title="${b.full}">${b.label}</span>`).join('')}</div></td>
@@ -323,7 +327,7 @@ function renderPreContract() {
   }).join('') : `<tr><td colspan="7" class="empty">契約前の案件はありません</td></tr>`;
 
   document.getElementById('preContractTable').innerHTML = `
-    <thead><tr><th class="l">顧客・物件</th><th>金額</th><th>契約予定</th>
+    <thead><tr><th class="l">顧客・物件</th><th>見込金額</th><th>契約予定</th>
       <th>阻害要因</th><th>残</th><th>ランク</th><th class="l">次にやること</th></tr></thead>
     <tbody>${body}${all.length > MAX
       ? `<tr><td colspan="7" class="empty">ほか ${all.length - MAX} 件（契約予定日の早い順に${MAX}件まで表示）</td></tr>` : ''}</tbody>`;

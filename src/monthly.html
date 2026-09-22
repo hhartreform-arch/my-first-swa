@@ -77,6 +77,8 @@
           <button data-level="mediaM" class="on">中分類</button>
           <button data-level="mediaL">大分類</button>
           <button data-level="mediaS">小分類</button>
+          <select id="mediaLFilter" style="margin-left:auto;font:inherit;font-size:11.5px;
+            padding:4px 8px;border:1px solid var(--line);border-radius:4px;color:var(--navy)"></select>
         </div>
         <div class="tbl-scroll"><table id="mediaTable"></table></div>
         <p style="font-size:11.5px;margin:8px 0 0" id="mediaComment"></p>
@@ -104,6 +106,7 @@
 let ALL = [], MINE = [], P = null, YEAR = 0;
 let RATE_MODE = 'occur';
 let MEDIA_LEVEL = 'mediaM';
+let MEDIA_L_FILTER = '';  // 媒体大分類フィルタ（空＝全大分類）
 
 (async function init() {
   P = getParams();
@@ -115,6 +118,7 @@ let MEDIA_LEVEL = 'mediaM';
     buildSelectors(ALL, P, navigateBySelectors);
     mountDiagnostics(P);
     bindToggles();
+    buildMediaFilter();
     render();
     document.getElementById('main').style.display = 'block';
   } catch (e) {
@@ -136,6 +140,18 @@ function bindToggles() {
     document.querySelectorAll('#mediaToggle button').forEach(x => x.classList.toggle('on', x === b));
     renderMedia();
   });
+}
+
+/* 媒体大分類フィルタのプルダウンを組み立てる（CONFIG.mediaLOrderの順、データに無いものは付けない） */
+function buildMediaFilter() {
+  const sel = document.getElementById('mediaLFilter');
+  if (!sel) return;
+  const present = uniqueSorted(ALL.map(d => d.mediaL));
+  const ordered = [...CONFIG.mediaLOrder.filter(k => present.includes(k)),
+                   ...present.filter(k => !CONFIG.mediaLOrder.includes(k))];
+  sel.innerHTML = '<option value="">全大分類</option>'
+    + ordered.map(k => `<option value="${esc(k)}"${k === MEDIA_L_FILTER ? ' selected' : ''}>${esc(k)}</option>`).join('');
+  sel.onchange = () => { MEDIA_L_FILTER = sel.value; renderMedia(); };
 }
 
 function render() {
@@ -194,10 +210,9 @@ function renderBands() {
   document.getElementById('avgNote').textContent =
     `黒線＝${P.owner ? '本人' : '選択範囲'}平均の受注率 ${fmtPct(myAvg)}`;
 
-  const map = groupBy(cohort, d => d.priceBand, '価格帯 未入力');
+  const map = groupBy(cohort, d => d.priceBand, '不明');
   const keys = [...CONFIG.priceBandOrder.filter(k => map.has(k)),
-                ...[...map.keys()].filter(k => !CONFIG.priceBandOrder.includes(k) && k !== '価格帯 未入力'),
-                ...(map.has('価格帯 未入力') ? ['価格帯 未入力'] : [])];
+                ...[...map.keys()].filter(k => !CONFIG.priceBandOrder.includes(k))];
 
   const rowFor = (label, list) => {
     const won = wonOf(list);
@@ -224,11 +239,7 @@ function renderBands() {
   const rows = keys.map(k => rowFor(k, map.get(k)));
   const total = rowFor('合計', cohort);
 
-  const tr = r => r.label === '価格帯 未入力'
-    ? `<tr style="background:#fdf3f2"><td class="l"><b>${esc(r.label)}</b></td>
-        <td class="num">${r.list.length}</td><td class="c">―</td><td class="c">―</td>
-        <td colspan="7" class="l" style="color:#8e2a1e">正規価格帯が空欄。入力するとこの${r.list.length}件も集計に入ります</td></tr>`
-    : `<tr>
+  const tr = r => `<tr${r.label === '不明' ? ' style="background:#fdf3f2"' : ''}>
         <td class="l"><b>${esc(r.label)}</b></td>
         <td class="num">${r.list.length.toLocaleString('ja-JP')}</td>
         <td class="num">${r.won.length.toLocaleString('ja-JP')}</td>
@@ -258,7 +269,7 @@ function renderBands() {
         <td class="num">${total.lossCount}</td></tr>
     </tbody>`;
 
-  const worst = rows.filter(r => r.loss !== null && r.label !== '価格帯 未入力').sort((a, b) => a.loss - b.loss)[0];
+  const worst = rows.filter(r => r.loss !== null && r.label !== '不明').sort((a, b) => a.loss - b.loss)[0];
   const totalLossCount = rows.reduce((a, r) => a + r.lossCount, 0);
   document.getElementById('bandComment').innerHTML = worst
     ? `毀損がいちばん大きいのは <b>${esc(worst.label)}</b>（${fmtPt(worst.loss)}）。毀損${totalLossCount}件のうち${worst.lossCount}件がこの帯にあります。`
@@ -271,38 +282,69 @@ function renderBands() {
 
 /* ---------- 3. 媒体 ---------- */
 function renderMedia() {
-  const cohort = cohortOf(MINE);
-  const map = groupBy(cohort, d => d[MEDIA_LEVEL], '媒体 未入力');
+  let cohort = cohortOf(MINE);
+  if (MEDIA_L_FILTER) cohort = cohort.filter(d => d.mediaL === MEDIA_L_FILTER);
   const myAvg = cohort.length ? wonOf(cohort).length / cohort.length : 0;
 
-  const rows = [...map.entries()].map(([k, list]) => {
+  const statOf = list => {
     const won = wonOf(list);
-    return { k, n: list.length, w: won.length,
+    return { n: list.length, w: won.length,
       rate: list.length ? won.length / list.length : null, amount: sum(won, d => d.amount) };
-  }).sort((a, b) => b.n - a.n);
+  };
+  const rowHtml = (label, s, cls = '') => `
+    <tr class="${cls}"><td class="l">${esc(label)}</td>
+      <td class="num">${s.n.toLocaleString('ja-JP')}</td><td class="num">${s.w.toLocaleString('ja-JP')}</td>
+      <td class="num"><b>${fmtPct(s.rate)}</b></td>
+      <td><div class="inbar"><i style="width:${Math.min(100, (s.rate || 0) * 100)}%;background:${
+        s.rate >= 0.5 ? 'var(--green)' : s.rate >= 0.4 ? 'var(--orange)' : 'var(--red)'}"></i>
+        <span class="avg" style="left:${Math.min(100, myAvg * 100)}%"></span></div></td>
+      <td class="num">${fmtMan(s.amount)}</td></tr>`;
+
+  let bodyHtml, mediaCount, commentRows;
+
+  if (MEDIA_LEVEL === 'mediaM') {
+    // デフォルト：大分類（CONFIG.mediaLOrderの順）でグループ化し、その下に中分類を並べる
+    const byL = groupBy(cohort, d => d.mediaL, '媒体 未入力');
+    const lKeys = [...CONFIG.mediaLOrder.filter(k => byL.has(k)),
+                   ...[...byL.keys()].filter(k => !CONFIG.mediaLOrder.includes(k))];
+    const flat = [];
+    bodyHtml = lKeys.map(lk => {
+      const lList = byL.get(lk);
+      const byM = groupBy(lList, d => d.mediaM, '（中分類未入力）');
+      const mKeys = [...byM.keys()].sort((a, b) => byM.get(b).length - byM.get(a).length);
+      const mRows = mKeys.map(mk => {
+        const s = statOf(byM.get(mk));
+        flat.push({ k: mk, ...s });
+        return rowHtml('　' + mk, s);
+      }).join('');
+      return rowHtml(lk, statOf(lList), 'accent') + mRows;
+    }).join('');
+    mediaCount = lKeys.length;
+    commentRows = flat;
+  } else {
+    const map = groupBy(cohort, d => d[MEDIA_LEVEL], '媒体 未入力');
+    const rows = [...map.entries()].map(([k, list]) => ({ k, ...statOf(list) })).sort((a, b) => b.n - a.n);
+    bodyHtml = rows.slice(0, 15).map(r => rowHtml(r.k, r)).join('') || '<tr><td colspan="6" class="empty">データなし</td></tr>';
+    mediaCount = rows.length;
+    commentRows = rows;
+  }
 
   const totalWon = wonOf(cohort);
   const totalAmt = sum(totalWon, d => d.amount);
 
   document.getElementById('mediaTable').innerHTML = `
     <thead><tr><th class="l">媒体</th><th>発生</th><th>受注</th><th>受注率</th><th>水準</th><th>契約売上</th></tr></thead>
-    <tbody>${rows.slice(0, 15).map(r => `
-      <tr><td class="l">${esc(r.k)}</td>
-        <td class="num">${r.n.toLocaleString('ja-JP')}</td><td class="num">${r.w.toLocaleString('ja-JP')}</td>
-        <td class="num"><b>${fmtPct(r.rate)}</b></td>
-        <td><div class="inbar"><i style="width:${Math.min(100, (r.rate || 0) * 100)}%;background:${
-          r.rate >= 0.5 ? 'var(--green)' : r.rate >= 0.4 ? 'var(--orange)' : 'var(--red)'}"></i>
-          <span class="avg" style="left:${Math.min(100, myAvg * 100)}%"></span></div></td>
-        <td class="num">${fmtMan(r.amount)}</td></tr>`).join('')
-      || '<tr><td colspan="6" class="empty">データなし</td></tr>'}
+    <tbody>${bodyHtml}
       <tr class="total"><td class="l">合計</td><td class="num">${cohort.length.toLocaleString('ja-JP')}</td>
         <td class="num">${totalWon.length.toLocaleString('ja-JP')}</td>
         <td class="num">${fmtPct(cohort.length ? totalWon.length / cohort.length : null)}</td>
         <td></td><td class="num">${fmtMan(totalAmt)}</td></tr>
     </tbody>`;
 
-  document.getElementById('mediaNote').textContent = `${rows.length}媒体`;
-  const top2 = rows.slice(0, 2);
+  document.getElementById('mediaNote').textContent = MEDIA_L_FILTER
+    ? `${MEDIA_L_FILTER}のみ表示`
+    : `${mediaCount}媒体`;
+  const top2 = [...commentRows].sort((a, b) => b.amount - a.amount).slice(0, 2);
   const share = totalAmt ? top2.reduce((a, r) => a + r.amount, 0) / totalAmt : null;
   document.getElementById('mediaComment').innerHTML = top2.length === 2
     ? `上位2媒体（${esc(top2[0].k)}・${esc(top2[1].k)}）で契約売上の <b>${fmtPct(share, 0)}</b> を占めています。`
@@ -311,7 +353,7 @@ function renderMedia() {
 
 /* ---------- 4. 粗利毀損の中身 ---------- */
 function renderLoss() {
-  const done = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
+  const done = MINE.filter(d => d.completeYear === YEAR);
   const lossDeals = done.filter(d => d.lossYen !== null && d.lossYen < 0);
   const lossTotal = Math.abs(sum(lossDeals, d => d.lossYen));
   document.getElementById('lossNote').textContent =
@@ -358,7 +400,7 @@ function renderLoss() {
 
 /* ---------- 5. アンケート ---------- */
 function renderSurvey() {
-  const done = MINE.filter(d => d.isDoneInYear && sameYear(d.completeBase, YEAR));
+  const done = MINE.filter(d => d.completeYear === YEAR);
   document.getElementById('surveyNote').textContent = `完工${done.length}件が対象`;
   document.getElementById('surveyCard').innerHTML = `
     <div class="note-box" style="margin:0">
