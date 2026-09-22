@@ -1,0 +1,22 @@
+{
+  "auth": {
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/テナントIDをここに/v2.0",
+          "clientIdSettingName": "AZURE_CLIENT_ID",
+          "clientSecretSettingName": "AZURE_CLIENT_SECRET"
+        }
+      }
+    }
+  },
+  "routes": [
+    { "route": "/logout", "statusCode": 302, "redirect": "/.auth/logout" },
+    { "route": "/api/*", "allowedRoles": ["authenticated"] },
+    { "route": "/*", "allowedRoles": ["authenticated"] }
+  ],
+  "responseOverrides": {
+    "401": { "statusCode": 302, "redirect": "/.auth/login/aad" }
+  },
+  "navigationFallback": { "rewrite": "/index.html" }
+}
