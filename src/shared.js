@@ -31,10 +31,17 @@ const CONFIG = {
   contractTargetRatio: 1,
 
   // 価格帯の並び順（シートの「正規価格帯」の値に合わせて書き換える）
-  priceBandOrder: ['～300万', '300～500万', '500～1,000万', '1,000万～'],
+  priceBandOrder: ['~50万', '50万~100万', '100万~300万', '300万~500万', '500万~1000万', '1000万~', '不明'],
 
-  // 見込み金額に掛ける反映率（見込ランク別）。ランクが付いていない案件は0扱い
-  forecastWeights: { S: 0.9, A: 0.7, B: 0.5 }
+  // 媒体大分類の並び順（シートの「媒体大分類」の値に合わせて書き換える）
+  mediaLOrder: [
+    '店直（新規、ﾘﾋﾟｰﾄ全て含む）',
+    '不動産クライアントからの紹介',
+    'クライアント自宅',
+    'その他',
+    '過去の工事のクレーム処理',
+    '媒体 未入力'
+  ]
 };
 
 /* ---------------------------------------------------------------
@@ -73,7 +80,7 @@ const COL = {
   buildingType:  ['建物種別2'],
   contractBand:  ['契約価格帯'],
   priceBand:     ['正規価格帯'],
-  rank:          ['見込'],
+  rank:          ['見込ランク'],   // 実データの「見込」列はS/A/B等のランクではなく金額（→ forecastAmt）
   cityGroup:     ['物件市区群'],
 
   occurYear:     ['発生年'],
@@ -84,6 +91,9 @@ const COL = {
   completeMonth: ['完工月'],
   planYear:      ['契約予定年'],
   planMonth:     ['契約予定月'],
+
+  cntContract:   ['契約カウント'],   // 契約件数・完工件数はこの列のSUM（行数のカウントではない）
+  forecastAmt:   ['見込'],   // 実データでは「見込」列がランク反映率まで計算済みの金額（¥表記）
 
   // --- ここから下は「いまのシートに無い」列。足せば自動で使われる ---
   nextAction:    ['次にやること'],
@@ -297,8 +307,13 @@ function toDeal(row) {
     occurYear:    numLoose(cell(row, COL.occurYear)),
     occurMonth:   numLoose(cell(row, COL.occurMonth)),
     contractYear: numLoose(cell(row, COL.contractYear)),
+    contractMonth:numLoose(cell(row, COL.contractMonth)),
     completeYear: numLoose(cell(row, COL.completeYear)),
-    planMonth:    numLoose(cell(row, COL.planMonth))
+    completeMonth:numLoose(cell(row, COL.completeMonth)),
+    planMonth:    numLoose(cell(row, COL.planMonth)),
+
+    cntContract: num0(cell(row, COL.cntContract)),  // 契約件数・完工件数の集計に使う（行数ではなくこの値のSUM）
+    forecastAmt: num(cell(row, COL.forecastAmt))    // 見込金額（「見込」列。シート側でランク反映率まで計算済み）
   };
 
   /* ★ 完工の基準日
@@ -309,10 +324,6 @@ function toDeal(row) {
 
   // 進捗ステータス（いま案件がどこにあるか／進行中の案件数）用：今日時点で完工しているか
   d.isCompleted = !!(d.completeBase && d.contract && !d.lost && d.completeBase <= today());
-
-  // 売上集計用：完成日(予定/実績)が対象年に入っていて失注していなければ「実績」として数える。
-  // 契約日(実績)の有無・年は問わない（いつ契約した案件でも、完成日が対象年ならカウントする）
-  d.isDoneInYear = !!(d.completeBase && !d.lost);
 
   // 契約時粗利（= 契約金額 − 実行予算）
   d.plannedProfit = (amount !== null && budget !== null) ? amount - budget : null;
@@ -331,11 +342,6 @@ function toDeal(row) {
 
   d.status = statusOf(d);
   return d;
-}
-
-/** 見込み金額 = Σ 金額 × 実効ランク別の反映率（S90%・A70%・B50%。ランク無しは0） */
-function forecastAmount(deals) {
-  return sum(deals, d => (d.amount || 0) * (CONFIG.forecastWeights[d.rankEff] || 0));
 }
 
 function isTruthy(v) {
@@ -576,8 +582,11 @@ function diagnosticsHTML() {
     ['反響日', COL.inquiryDate], ['現調日', COL.surveyDate], ['見積提出日', COL.quoteDate],
     ['契約日', COL.contractDate], ['完成日(予定)', COL.completePlan], ['完成日(実績)', COL.completeDate],
     ['契約予定日', COL.planDate], ['契約金額', COL.amount], ['予算', COL.budget],
-    ['最終粗利', COL.profit], ['ブロック', COL.block], ['支店名', COL.branch], ['主担当', COL.owner]
+    ['最終粗利', COL.profit], ['契約年', COL.contractYear], ['完工年', COL.completeYear],
+    ['契約カウント', COL.cntContract], ['見込', COL.forecastAmt],
+    ['ブロック', COL.block], ['支店名', COL.branch], ['主担当', COL.owner]
   ];
+  const numericLabel = /金額|予算|粗利|カウント|^見込$|年$/;
 
   const rows = checkCols.map(([label, def]) => {
     const key = resolveKey(keys, def);
@@ -591,8 +600,8 @@ function diagnosticsHTML() {
       okCount = vals.filter(v => parseDate(v) !== null).length;
       samples = vals.filter(v => parseDate(v) === null).slice(0, 3);
     } else {
-      okCount = vals.filter(v => num(v) !== null || !/金額|予算|粗利/.test(label)).length;
-      samples = vals.filter(v => /金額|予算|粗利/.test(label) && num(v) === null).slice(0, 3);
+      okCount = vals.filter(v => num(v) !== null || !numericLabel.test(label)).length;
+      samples = vals.filter(v => numericLabel.test(label) && num(v) === null).slice(0, 3);
     }
     const bad = vals.length - okCount;
     return `<tr>
@@ -615,8 +624,9 @@ function diagnosticsHTML() {
       シート「${esc(d.sheet)}」から <b>${d.rows.length.toLocaleString('ja-JP')}行</b> 取得。
       うち案件として認識 <b>${d.all.length.toLocaleString('ja-JP')}件</b>、
       ${CONFIG.minYear}年以降に絞って <b>${d.kept.length.toLocaleString('ja-JP')}件</b>。<br>
-      完工の判定に使っている日付：<b>${CONFIG.completionBasis === 'plan' ? '完成日(予定)' : '完成日(実績)'}</b>
-      （その年に入っていれば、今日より前でも後でも実績として集計）。<br>
+      完工売上・契約売上の年の絞り込みは、日付からの計算ではなく<b>「完工年」「契約年」列の値をそのまま</b>使う
+      （他の条件は問わない）。完工の基準日（月次表の月分けなどに使う）は
+      <b>${CONFIG.completionBasis === 'plan' ? '完成日(予定)' : '完成日(実績)'}</b>。<br>
       目標シート「${esc(CONFIG.targetSheet)}」：${targetInfo}
     </p>
     <div class="tbl-scroll"><table>
