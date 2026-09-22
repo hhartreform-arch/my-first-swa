@@ -80,7 +80,7 @@ const COL = {
   buildingType:  ['建物種別2'],
   contractBand:  ['契約価格帯'],
   priceBand:     ['正規価格帯'],
-  rank:          ['見込'],
+  rank:          ['見込ランク'],   // 実データの「見込」列はS/A/B等のランクではなく金額（→ forecastAmt）
   cityGroup:     ['物件市区群'],
 
   occurYear:     ['発生年'],
@@ -93,7 +93,7 @@ const COL = {
   planMonth:     ['契約予定月'],
 
   cntContract:   ['契約カウント'],   // 契約件数・完工件数はこの列のSUM（行数のカウントではない）
-  forecastAmt:   ['見込額', '見込金額'],  // 見込ランクの反映率はシート側で計算済みなので、そのまま使う
+  forecastAmt:   ['見込'],   // 実データでは「見込」列がランク反映率まで計算済みの金額（¥表記）
 
   // --- ここから下は「いまのシートに無い」列。足せば自動で使われる ---
   nextAction:    ['次にやること'],
@@ -313,7 +313,7 @@ function toDeal(row) {
     planMonth:    numLoose(cell(row, COL.planMonth)),
 
     cntContract: num0(cell(row, COL.cntContract)),  // 契約件数・完工件数の集計に使う（行数ではなくこの値のSUM）
-    forecastAmt: num(cell(row, COL.forecastAmt))    // 見込額（シート側でランク反映率まで計算済み）
+    forecastAmt: num(cell(row, COL.forecastAmt))    // 見込金額（「見込」列。シート側でランク反映率まで計算済み）
   };
 
   /* ★ 完工の基準日
@@ -583,10 +583,10 @@ function diagnosticsHTML() {
     ['契約日', COL.contractDate], ['完成日(予定)', COL.completePlan], ['完成日(実績)', COL.completeDate],
     ['契約予定日', COL.planDate], ['契約金額', COL.amount], ['予算', COL.budget],
     ['最終粗利', COL.profit], ['契約年', COL.contractYear], ['完工年', COL.completeYear],
-    ['契約カウント', COL.cntContract], ['見込額', COL.forecastAmt],
+    ['契約カウント', COL.cntContract], ['見込', COL.forecastAmt],
     ['ブロック', COL.block], ['支店名', COL.branch], ['主担当', COL.owner]
   ];
-  const numericLabel = /金額|予算|粗利|カウント|見込額|年$/;
+  const numericLabel = /金額|予算|粗利|カウント|^見込$|年$/;
 
   const rows = checkCols.map(([label, def]) => {
     const key = resolveKey(keys, def);
